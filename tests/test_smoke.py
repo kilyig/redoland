@@ -1,0 +1,83 @@
+"""Smoke tests — run with: python3 tests/test_smoke.py  (no pytest needed)."""
+
+import os
+import shutil
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from redoland.core import Params, RNG, Mortality
+from redoland.backend import FakeBackend
+from redoland.engine import Engine
+from redoland.sim import Simulation
+from redoland.metrics import snapshot_metrics
+
+
+def check(cond, msg):
+    if not cond:
+        raise AssertionError(msg)
+    print("  ok:", msg)
+
+
+def test_mortality_monotonic():
+    m = Mortality()
+    for sex in ("male", "female"):
+        qs = [m.q(a, sex) for a in range(21, 110)]
+        check(all(b >= a - 1e-9 for a, b in zip(qs, qs[1:])),
+              f"{sex} mortality non-decreasing with age")
+
+
+def test_rng_serialization():
+    r = RNG(seed=1)
+    s = r.get_state()
+    r2 = RNG(state=s)
+    check(all(r.random() == r2.random() for _ in range(50)), "rng replays from state")
+
+
+def test_engine_invariants():
+    eng = Engine.found(Params(ratio=1.15), FakeBackend(), seed=11)
+    for _ in range(25):
+        eng.run_year()
+    w = eng.w
+    check(all(0 <= a.health <= 3 for a in w.agents.values()), "health in [0,3]")
+    check(all(a.food >= 0 for a in w.agents.values()), "food non-negative")
+    check(all(a.intelligence_tokens >= 1024 for a in w.agents.values()),
+          "intelligence >= API floor")
+    check(all((a.sex in ("male", "female")) for a in w.agents.values()), "sex valid")
+    # no agent is its own kin
+    check(all(a.id not in a.parents + a.children + a.siblings for a in w.agents.values()),
+          "no self-kinship")
+
+
+def test_determinism():
+    a = Engine.found(Params(ratio=1.15), FakeBackend(), seed=99)
+    b = Engine.found(Params(ratio=1.15), FakeBackend(), seed=99)
+    for _ in range(15):
+        a.run_year(); b.run_year()
+    check(sorted(a.w.agents) == sorted(b.w.agents) and a.w.pile == b.w.pile,
+          "same seed -> identical world")
+
+
+def test_branching_diverges():
+    path = "/tmp/redoland_smoke_run"
+    shutil.rmtree(path, ignore_errors=True)
+    sim = Simulation.create(path, Params(ratio=1.15), seed=5, backend=FakeBackend())
+    sim.run(15)
+    sim.fork("main", 10, "drought")
+    sim.inject("drought", ratio=0.5)
+    sim.replay("drought", 12)
+    sim.fork("main", 10, "control")
+    sim.replay("control", 12)
+    d = sim.diff("drought", 22, "control", 22)
+    dp = d["drought@y22"]["population"]
+    cp = d["control@y22"]["population"]
+    check(dp != cp, f"drought ({dp}) diverges from control ({cp})")
+    shutil.rmtree(path, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    for fn in [test_mortality_monotonic, test_rng_serialization,
+               test_engine_invariants, test_determinism, test_branching_diverges]:
+        print(fn.__name__)
+        fn()
+    print("\nALL SMOKE TESTS PASSED")

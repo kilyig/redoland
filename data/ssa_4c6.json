@@ -1,0 +1,21 @@
+{
+  "_source": "Approximation of the SSA Period Life Table, 2021 (Table 4C6, https://www.ssa.gov/oact/STATS/table4c6.html). The live page blocks automated access (HTTP 403), so these are anchor values consistent with the published 2021 period table, linearly interpolated between anchors in code. Agents in Redoland are born at age 21 and only age upward, so only ages 20+ are needed. To use the exact official table, replace the 'male'/'female' maps below with q(x) for every age from the downloaded SSA CSV.",
+  "_columns": "q(x) = probability that a person of exact age x dies within one year",
+  "_interpolation": "linear between listed anchor ages; q(120)=1.0; ages below 20 fall back to age 20",
+  "male": {
+    "20": 0.001386, "25": 0.001587, "30": 0.001780, "35": 0.002098,
+    "40": 0.002596, "45": 0.003603, "50": 0.005399, "55": 0.008078,
+    "60": 0.011948, "65": 0.017460, "70": 0.025650, "75": 0.039000,
+    "80": 0.062000, "85": 0.099000, "90": 0.160000, "95": 0.237000,
+    "100": 0.316000, "105": 0.389000, "110": 0.454000, "115": 0.500000,
+    "119": 0.550000, "120": 1.0
+  },
+  "female": {
+    "20": 0.000487, "25": 0.000549, "30": 0.000753, "35": 0.001017,
+    "40": 0.001501, "45": 0.002247, "50": 0.003302, "55": 0.004931,
+    "60": 0.007288, "65": 0.011220, "70": 0.017210, "75": 0.027020,
+    "80": 0.045500, "85": 0.075990, "90": 0.128760, "95": 0.206740,
+    "100": 0.288420, "105": 0.364990, "110": 0.434420, "115": 0.490000,
+    "119": 0.520000, "120": 1.0
+  }
+}
