@@ -179,6 +179,8 @@ def build_parser():
 
 
 def main(argv=None):
+    from .env import load_dotenv
+    load_dotenv()
     args = build_parser().parse_args(argv)
     args.fn(args)
 

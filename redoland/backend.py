@@ -6,10 +6,11 @@ A backend turns world state + an agent into decisions. Two implementations:
                   RNG. Needs no API key; used for all offline test runs and for
                   exercising the web viewer. Produces lively, readable
                   transcripts so the branching demo is meaningful.
-* AnthropicBackend — the real thing: Claude Sonnet 4.6 with a per-agent
-                  `budget_tokens` thinking dial (the continuous intelligence
-                  knob, MVP_PLAN.md §8) and Haiku 4.5 for cheap hand-raise /
-                  compaction calls. Imported lazily; untested here (no key).
+* AnthropicBackend — the real thing. All agents run on Claude Haiku 4.5 by
+                  default (configurable via REDOLAND_AGENT_MODEL /
+                  REDOLAND_CHEAP_MODEL). The per-agent `budget_tokens` thinking
+                  dial (the continuous intelligence knob, MVP_PLAN.md §8) stays
+                  on by default via REDOLAND_THINKING. Imported lazily.
 
 Backend method contract (all take the engine `rng` so every random draw stays
 in the one replayable stream):
@@ -291,12 +292,21 @@ class FakeBackend:
 class AnthropicBackend:
     name = "anthropic"
 
-    AGENT_MODEL = "claude-sonnet-4-6"
-    CHEAP_MODEL = "claude-haiku-4-5"
-
     def __init__(self, api_key: Optional[str] = None):
+        import os
+        from .env import load_dotenv
+        load_dotenv()
         import anthropic  # lazy: only needed for the real backend
         self._client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
+        # All agents on Haiku by default (cheapest). Both the full agent turn
+        # and the cheap hand-raise/compaction calls use these.
+        self.AGENT_MODEL = os.environ.get("REDOLAND_AGENT_MODEL", "claude-haiku-4-5")
+        self.CHEAP_MODEL = os.environ.get("REDOLAND_CHEAP_MODEL", "claude-haiku-4-5")
+        # REDOLAND_THINKING=1 keeps the per-agent intelligence dial (budget_tokens
+        # extended thinking, supported on Haiku 4.5). Set to 0 if a model rejects
+        # extended thinking — agents still run, intelligence just stops varying
+        # thinking depth.
+        self.use_thinking = os.environ.get("REDOLAND_THINKING", "1") != "0"
 
     # -- prompt construction --------------------------------------------- #
     def system_prompt(self, world, agent) -> str:
@@ -344,15 +354,19 @@ Speak naturally and briefly. Your personality shapes what you do, not what you s
         params = world.params
         sys = self.system_prompt(world, agent)
         situation = self._situation_text(world, agent)
-        budget = max(1024, int(agent.intelligence_tokens))
-        resp = self._client.messages.create(
+        kwargs = dict(
             model=self.AGENT_MODEL,
-            max_tokens=budget + params.output_allowance,
-            thinking={"type": "enabled", "budget_tokens": budget},
             system=sys,
             messages=[{"role": "user", "content": f"{situation}\n\n{instruction}"}],
             output_config={"format": {"type": "json_schema", "schema": schema}},
         )
+        if self.use_thinking:
+            budget = max(1024, int(agent.intelligence_tokens))  # intelligence dial
+            kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+            kwargs["max_tokens"] = budget + params.output_allowance
+        else:
+            kwargs["max_tokens"] = params.output_allowance
+        resp = self._client.messages.create(**kwargs)
         import json
         text = next((b.text for b in resp.content if b.type == "text"), "{}")
         return json.loads(text)
