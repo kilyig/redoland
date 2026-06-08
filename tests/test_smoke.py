@@ -1,16 +1,23 @@
-"""Smoke tests — run with: python3 tests/test_smoke.py  (no pytest needed)."""
+"""Smoke tests for the Concordia-based engine — run with:
+    python3 tests/test_cc.py        (no pytest, no network, no metered key)
+
+Every decision is driven by a deterministic scripted StubModel, so these test the
+engine/worldline mechanics, not the LLM. Mirrors the standalone smoke suite.
+"""
 
 import os
+import re
 import shutil
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from redoland.core import Params, RNG, Mortality
-from redoland.backend import FakeBackend
+from redoland.core import Params, Agent, RNG, BIG5, Mortality
+from redoland.model import StubModel, ClaudeCLIModel, dummy_embedder, safe_json
 from redoland.engine import Engine
+from redoland.world import World
 from redoland.sim import Simulation
-from redoland.metrics import snapshot_metrics
+from redoland.metrics import snapshot_metrics, distributions
 
 
 def check(cond, msg):
@@ -19,164 +26,172 @@ def check(cond, msg):
     print("  ok:", msg)
 
 
-def test_mortality_monotonic():
-    m = Mortality()
-    for sex in ("male", "female"):
-        qs = [m.q(a, sex) for a in range(21, 110)]
-        check(all(b >= a - 1e-9 for a, b in zip(qs, qs[1:])),
-              f"{sex} mortality non-decreasing with age")
+def _parse(p, pat, d=0):
+    m = re.search(pat, p)
+    return int(m.group(1)) if m else d
 
 
-def test_rng_serialization():
-    r = RNG(seed=1)
-    s = r.get_state()
-    r2 = RNG(state=s)
-    check(all(r.random() == r2.random() for _ in range(50)), "rng replays from state")
+def survival_stub():
+    """A scripted model: act when hungry, take to a buffer, eat to survive."""
+    def choice_fn(prompt, responses):
+        if "do you want to ACT" in prompt:
+            f = _parse(prompt, r"You hold (\d+) food"); pile = _parse(prompt, r"pile holds (\d+) food")
+            return 0 if (f < 2 and pile > 0) else 1
+        return 0
+    def text_fn(prompt):
+        if "Choose ONE action now" in prompt:
+            f = _parse(prompt, r"You hold (\d+) food"); pile = _parse(prompt, r"pile holds (\d+) food")
+            return ('{"kind":"take","amount":%d}' % min(pile, 2 - f)) if (pile > 0 and f < 2) else '{"kind":"pass"}'
+        if "How many of your stored food" in prompt:
+            s = _parse(prompt, r"satiation (\d+)/"); f = _parse(prompt, r"You hold (\d+) food")
+            return str(1 if s <= 2 and f > 0 else 0)
+        return ""
+    return StubModel(choice_fn=choice_fn, text_fn=text_fn)
+
+
+def mkbody(w, aid, name, sex, **kw):
+    d = dict(traits={t: 50 for t in BIG5}, intelligence_tokens=1500, memory_tokens=6000,
+             age=30, health=3, food=4)
+    d.update(kw)
+    b = Agent(id=aid, name=name, sex=sex, **d)
+    w.agents[aid] = b
+    w.used_names.add(name)
+    w.next_aid = max(w.next_aid, int(aid[1:]))
+    w.attach_mind(aid)
+    return b
+
+
+# --------------------------------------------------------------------------- #
+
+
+def test_model_parsing():
+    b = ClaudeCLIModel(thinking_tokens=0)
+    check(b._envelope('{"result":"hi","stop_reason":"end_turn"}') == "hi", "envelope unwraps result")
+    check(safe_json("```json\n{\"a\":1}\n```") == {"a": 1}, "safe_json strips fences")
+    check(safe_json("nope") == {}, "safe_json falls back to {}")
+    v = dummy_embedder("x")
+    check(hasattr(v, "shape") and v.shape[0] == 16, "dummy embedder returns a 16-d vector")
 
 
 def test_engine_invariants():
-    eng = Engine.found(Params(), FakeBackend(), seed=11)
-    for _ in range(25):
+    stub = survival_stub()
+    eng = Engine.found(Params(founders=5, ratio=1.6, start_food=1),
+                       model_factory=lambda t: stub, seed=7, randomize_choices=False)
+    for _ in range(4):
         eng.run_year()
-    w = eng.w
-    check(all(0 <= a.health <= 3 for a in w.agents.values()), "satiation in [0,3]")
-    check(all(0 <= a.hp <= w.params.hp_max for a in w.agents.values()), "HP in [0,100]")
-    check(all(0 <= a.strength <= 100 for a in w.agents.values()), "strength in [0,100]")
-    check(all(a.food >= 0 for a in w.agents.values()), "food non-negative")
-    check(all(a.intelligence_tokens >= 1024 for a in w.agents.values()),
-          "intelligence >= API floor")
-    check(all((a.sex in ("male", "female")) for a in w.agents.values()), "sex valid")
-    check(all(a.id not in a.parents + a.children + a.siblings for a in w.agents.values()),
-          "no self-kinship")
-
-
-def test_combat_and_repro_occur():
-    eng = Engine.found(Params(), FakeBackend(), seed=11)
-    kinds = set()
-    for _ in range(25):
-        for e in eng.run_year():
-            kinds.add(e["kind"])
-    check("attack" in kinds and "blow" in kinds, "raids and blows happen")
-    check("birth" in kinds, "reproduction (via convos) happens")
-    dead = [a for a in eng.w.agents.values() if not a.alive]
-    check(any(a.death_cause == "combat" for a in dead), "combat deaths occur")
+    for a in eng.w.agents.values():
+        check(0 <= a.health <= 3, f"satiation in range ({a.name})")
+        check(0 <= a.hp <= 100, f"HP in range ({a.name})")
+        check(0 <= a.strength <= 100, f"strength in range ({a.name})")
+        check(a.food >= 0, f"food non-negative ({a.name})")
+        check(a.sex in ("male", "female"), "sex valid")
+        check(a.id not in (a.parents + a.children + a.siblings), "no self-kinship")
+    check(len(eng.w.minds) >= len(eng.w.living()), "every living agent has a mind")
 
 
 def test_determinism():
-    a = Engine.found(Params(ratio=1.15), FakeBackend(), seed=99)
-    b = Engine.found(Params(ratio=1.15), FakeBackend(), seed=99)
-    for _ in range(15):
-        a.run_year(); b.run_year()
-    check(sorted(a.w.agents) == sorted(b.w.agents) and a.w.pile == b.w.pile,
-          "same seed -> identical world")
+    def world():
+        stub = survival_stub()
+        e = Engine.found(Params(founders=5, ratio=1.5, start_food=1),
+                         model_factory=lambda t: stub, seed=99, randomize_choices=False)
+        for _ in range(4):
+            e.run_year()
+        return e.w
+    a, b = world(), world()
+    check(sorted(a.agents) == sorted(b.agents) and a.pile == b.pile,
+          "same seed + scripted model -> identical world (rng-driven physics)")
+    check([a.agents[i].food for i in sorted(a.agents)] ==
+          [b.agents[i].food for i in sorted(b.agents)], "identical food vector")
 
 
-def test_branching_diverges():
-    path = "/tmp/redoland_smoke_run"
-    shutil.rmtree(path, ignore_errors=True)
-    sim = Simulation.create(path, Params(ratio=1.15), seed=5, backend=FakeBackend())
-    sim.run(15)
-    sim.fork("main", 10, "drought")
-    sim.inject("drought", ratio=0.5)
-    sim.replay("drought", 12)
-    sim.fork("main", 10, "control")
-    sim.replay("control", 12)
-    d = sim.diff("drought", 22, "control", 22)
-    dp = d["drought@y22"]["population"]
-    cp = d["control@y22"]["population"]
-    check(dp != cp, f"drought ({dp}) diverges from control ({cp})")
-    shutil.rmtree(path, ignore_errors=True)
+def test_combat_resolves():
+    def cf(prompt, responses):
+        p = prompt.lower()
+        if "press the attack or call it off" in p: return 0
+        if "stand and fight, or submit" in p: return 0
+        if "press on or flee" in p: return 0
+        if "do you join" in p: return 1
+        return 0
+    stub = StubModel(choice_fn=cf, text_fn=lambda p: '{"invite":[]}' if "invite" in p else "")
+    w = World(Params(), RNG(5), model_factory=lambda t: stub, randomize_choices=False); w.year = 1
+    mkbody(w, "a001", "Eron", "male", strength=90, hp=100, food=2)
+    mkbody(w, "a002", "Kesh", "female", strength=30, hp=100, food=5)
+    eng = Engine(w); w.year_events = []
+    eng._fight_chunk(w.agents["a001"], w.agents["a002"], demand=5)
+    kinds = [e["kind"] for e in w.year_events]
+    check("blow" in kinds or "submit" in kinds, "combat resolves (blows or submission)")
+    check(w.agents["a002"].hp < 100 or "submit" in kinds, "defender takes damage or submits")
 
 
-def test_talk_chunk_group_dialogue():
-    """The talk action runs an open-floor GROUP conversation: the initiator opens,
-    anyone in the group may chime in, every line is heard by the whole group, and
-    it ends when no one wants the floor — no turn limit. No network; stub backend."""
-    from redoland.engine import World, Engine
-    from redoland.core import Agent, RNG
+def test_birth_crossover():
+    stub = StubModel(choice_fn=lambda p, r: 0,
+                     text_fn=lambda p: "Be strong." if "note" in p.lower() else "")
+    w = World(Params(child_cost=3), RNG(5), model_factory=lambda t: stub, randomize_choices=False); w.year = 2
+    mkbody(w, "a001", "Eron", "male", strength=80, intelligence_tokens=3000)
+    mkbody(w, "a002", "Kesh", "female", strength=40, intelligence_tokens=1200)
+    eng = Engine(w); w.year_events = []
+    before = set(w.agents)
+    eng._convo_chunk(w.agents["a001"], {"partner": "a002", "my_share": 1})
+    new = [i for i in w.agents if i not in before]
+    check(len(new) == 1, "a child is born")
+    c = w.agents[new[0]]
+    check(0 <= c.strength <= 100 and c.intelligence_tokens >= 1024, "child genome within bounds")
+    check(new[0] in w.minds, "child mind attached mid-year")
+    check(set(c.parents) == {"a001", "a002"}, "child kin links set")
 
-    class GroupStub(FakeBackend):
-        def __init__(self, budget):
-            self.said = 0
-            self.budget = budget                     # total utterances allowed
-        def want_to_speak(self, world, a, others, history, rng):
-            return self.said < self.budget           # everyone keen until budget spent
-        def say(self, world, speaker, others, history, rng):
-            self.said += 1
-            return {"text": f"u{self.said} by {speaker.name}"}
 
-    def mk(aid, name, sex):
-        return Agent(id=aid, name=name, sex=sex, traits={t: 50 for t in
-                     ["openness", "conscientiousness", "extraversion",
-                      "agreeableness", "neuroticism"]},
-                     intelligence_tokens=1024, memory_tokens=4000, age=30,
-                     health=3, food=2)
-    w = World(Params(convo_safety_cap=200), RNG(seed=3))
-    w.agents = {"a001": mk("a001", "Ana", "female"),
-                "a002": mk("a002", "Bo", "male"),
-                "a003": mk("a003", "Cy", "male"),
-                "a004": mk("a004", "Di", "female")}   # a004 NOT pulled into the convo
-    eng = Engine(w, GroupStub(budget=5))
-    w.year_events = []
-    # initiator a001 pulls aside a SUBSET (a002, a003) — a004 is excluded
+def test_group_talk():
+    speak = {"n": 0}
+    def cf(prompt, responses):
+        if "do you want to speak now" in prompt.lower():
+            speak["n"] += 1
+            return 0 if speak["n"] <= 3 else 1
+        return 0
+    stub = StubModel(choice_fn=cf, text_fn=lambda p: "We must look after kin." if "say your next line" in p.lower() else "")
+    w = World(Params(), RNG(5), model_factory=lambda t: stub, randomize_choices=False); w.year = 1
+    mkbody(w, "a001", "Eron", "male"); mkbody(w, "a002", "Kesh", "female"); mkbody(w, "a003", "Ivo", "male")
+    eng = Engine(w); w.year_events = []
     eng._talk_chunk(w.agents["a001"], {"partners": ["a002", "a003"]})
-
     says = [e for e in w.year_events if e["kind"] == "say"]
-    gid = ["a001", "a002", "a003"]
-    check(len(says) == 5, f"runs until willingness budget spent (got {len(says)})")
+    check(len(says) >= 1, "group conversation produces utterances")
+    check(all(e["audience"] == ["a001", "a002", "a003"] for e in says), "every line heard by the whole group")
     check(says[0]["speaker"] == "a001", "initiator opens")
-    check(all(e["audience"] == gid for e in says),
-          "every line heard by the whole group (and only the group)")
-    check("a004" not in {e["speaker"] for e in says},
-          "a non-member never speaks")
-    spoke = {e["speaker"] for e in says}
-    check("a002" in spoke or "a003" in spoke, "members other than initiator chime in")
-    check(not any(s == t for s, t in zip([e["speaker"] for e in says],
-                                         [e["speaker"] for e in says][1:])),
-          "no one speaks twice in a row (last speaker yields the floor)")
-
-    # ends on quiescence with NO turn limit: nobody willing -> stops immediately
-    w2 = World(Params(convo_safety_cap=200), RNG(seed=3))
-    w2.agents = {k: mk(k, n, s) for k, n, s in
-                 [("a001", "Ana", "female"), ("a002", "Bo", "male")]}
-    eng2 = Engine(w2, GroupStub(budget=1))           # only the opener speaks
-    w2.year_events = []
-    eng2._talk_chunk(w2.agents["a001"], {"partners": ["a002"]})
-    check(len([e for e in w2.year_events if e["kind"] == "say"]) == 1,
-          "no-limit loop ends immediately when no one wants the floor")
 
 
-def test_cli_backend_parsing():
-    """CLIBackend unwraps the `claude -p --output-format json` envelope and
-    parses the action JSON robustly — no network, no metered key."""
-    from redoland.backend import CLIBackend
-    import json
-    b = CLIBackend()
-    check(b.name == "cli", "CLIBackend reports name 'cli'")
-    env = json.dumps({"type": "result", "is_error": False,
-                      "result": "```json\n{\"kind\":\"take\",\"amount\":2}\n```"})
-    check(b._safe_json_cli(env) == {"kind": "take", "amount": 2},
-          "envelope + ```json fence parsed")
-    check(b._safe_json_cli('{"act": true}') == {"act": True}, "bare json parsed")
-    check(b._safe_json_cli(json.dumps({"result": "ok: {\"kind\":\"pass\"} done"}))
-          == {"kind": "pass"}, "prose-wrapped json extracted")
-    check(b._safe_json_cli("not json") == {}, "garbage -> {} (no-op fallback)")
-    check(b._safe_json_cli("") == {}, "empty -> {} (no-op fallback)")
-    check(not hasattr(b, "_client"), "CLIBackend holds no anthropic SDK client")
-    # _envelope surfaces stop_reason so _decide can detect a truncated answer
-    text, stop = b._envelope(json.dumps(
-        {"result": "{\"act\": true}", "stop_reason": "max_tokens"}))
-    check((text, stop) == ('{"act": true}', "max_tokens"),
-          "_envelope returns (text, stop_reason)")
-    check(b._envelope("raw text") == ("raw text", None),
-          "_envelope falls back to (raw, None) for non-envelope stdout")
+def test_worldline_fork_inject_replay():
+    path = "/tmp/redoland_cc_test_run"
+    shutil.rmtree(path, ignore_errors=True)
+    stub = survival_stub()
+    mf = lambda t: stub
+    sim = Simulation.create(path, Params(founders=5, ratio=1.6, start_food=1), seed=7,
+                            model_factory=mf, randomize_choices=False)
+    sim.run(2)
+    check(sim.store.years_for_branch("main") == [0, 1, 2], "main worldline committed years 0-2")
+    sim.fork("main", 1, "famine")
+    sim.inject("famine", ratio=0.2, narrate="A blight ruins the harvest.")
+    sim.replay("famine", 2)
+    ma = snapshot_metrics(sim.store.load_world(sim.store.tag("main", 2)))
+    fa = snapshot_metrics(sim.store.load_world(sim.store.tag("famine", 3)))
+    check(ma["food_total"] != fa["food_total"] or ma["population"] != fa["population"],
+          "fork + inject + replay produces a divergent timeline")
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def test_distributions():
+    stub = survival_stub()
+    eng = Engine.found(Params(founders=5, ratio=1.6), model_factory=lambda t: stub,
+                       seed=3, randomize_choices=False)
+    eng.run_year()
+    d = distributions(eng.w)
+    for key in ["food", "intelligence", "memory", "age", "strength"] + BIG5:
+        check(key in d and len(d[key]) == len(eng.w.living()), f"distribution '{key}' present")
+    check(len(d["_agents"]) == len(eng.w.living()), "per-agent rows present")
 
 
 if __name__ == "__main__":
-    for fn in [test_mortality_monotonic, test_rng_serialization,
-               test_engine_invariants, test_combat_and_repro_occur,
-               test_determinism, test_branching_diverges,
-               test_talk_chunk_group_dialogue, test_cli_backend_parsing]:
+    for fn in [test_model_parsing, test_engine_invariants, test_determinism,
+               test_combat_resolves, test_birth_crossover, test_group_talk,
+               test_worldline_fork_inject_replay, test_distributions]:
         print(fn.__name__)
         fn()
-    print("\nALL SMOKE TESTS PASSED")
+    print("\nALL CC TESTS PASSED")

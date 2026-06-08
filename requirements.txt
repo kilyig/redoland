@@ -1,0 +1,2 @@
+# Redoland runs on Concordia; inference is via the `claude` CLI (no SDK needed).
+gdm-concordia==2.4.0
