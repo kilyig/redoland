@@ -93,6 +93,7 @@ class GitStore:
             "next_eid": world.next_eid, "next_aid": world.next_aid,
             "used_names": sorted(world.used_names),
             "rng_state": world.rng.get_state(), "params": world.params.to_dict(),
+            "cursor": world.cursor,            # resumable run position (phase/last/steps)
         }
         self._write_json("meta.json", meta)
         adir = os.path.join(self.path, "agents")
@@ -128,9 +129,23 @@ class GitStore:
         world.next_eid = meta["next_eid"]
         world.next_aid = meta["next_aid"]
         world.used_names = set(meta["used_names"])
+        # resumable cursor — default to a clean year boundary (so old year-only
+        # commits, which have no cursor, continue correctly into the next year).
+        world.cursor = meta.get("cursor") or {"phase": "year_start", "last": None, "steps": 0}
         for ad in agents:
             world.agents[ad["id"]] = Agent.from_dict(ad)
+        # reload this year's accumulated events so a mid-year resume — or an inject at
+        # a boundary — keeps the cumulative transcript intact (each commit rewrites
+        # events/year-<N>.jsonl; a fresh year resets it in step()'s year_start phase).
+        raw = (self.read_at(ref, f"events/year-{world.year}.jsonl") if ref is not None
+               else self._read_local(f"events/year-{world.year}.jsonl"))
+        if raw:
+            world.year_events = [json.loads(l) for l in raw.splitlines() if l.strip()]
         return world                                  # minds rebuilt lazily via world.mind()
+
+    def _read_local(self, relpath: str) -> Optional[str]:
+        p = os.path.join(self.path, relpath)
+        return open(p).read() if os.path.exists(p) else None
 
     def _write_json(self, relpath, obj):
         full = os.path.join(self.path, relpath)
@@ -160,8 +175,31 @@ class GitStore:
                        capture_output=True, text=True)
         return nb
 
+    def checkout_fork_at(self, commit: str, new_branch: str):
+        """Branch a new worldline from ANY commit hash (a single action), not just a
+        year tag — this is what lets the AI fork from within any step."""
+        nb = safe_branch(new_branch)
+        self._git("checkout", "-q", "-b", nb, commit)
+        return nb
+
     def checkout_branch(self, branch: str):
         self._git("checkout", "-q", safe_branch(branch))
+
+    def current_commit(self) -> str:
+        return self._git("rev-parse", "HEAD")
+
+    def timeline(self, branch: Optional[str] = None, n: int = 40):
+        """Recent action-commits as [{commit, desc}] — the per-step history the AI
+        scans to choose a fork point (each desc is the step's main event text)."""
+        args = ["log", f"-{int(n)}", "--format=%h\t%s"]
+        if branch:
+            args.append(safe_branch(branch))
+        rows = []
+        for ln in self._git(*args).splitlines():
+            if "\t" in ln:
+                h, s = ln.split("\t", 1)
+                rows.append({"commit": h, "desc": s})
+        return rows
 
     def years_for_branch(self, branch: str):
         b = safe_branch(branch)
