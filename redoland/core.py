@@ -65,6 +65,9 @@ class Params:
     hp_recovery: int = 25         # HP healed per year IF fed
     hp_recovery_min_satiation: int = 2   # heal only when satiation (hunger bar) >= this
     c_lethality: float = 0.3      # Lanchester constant: damage = c * enemy_strength
+    # how many willingness polls to run concurrently per scramble step (the polls
+    # are independent + read-only, so this is a pure speedup; 1 = sequential)
+    poll_workers: int = 8
     # halting backstops (termination guarantees, NOT cost limits)
     max_events_per_year: int = 600
     muster_passes_cap: int = 5

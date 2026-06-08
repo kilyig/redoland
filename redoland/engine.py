@@ -88,8 +88,7 @@ class Engine:
         while steps < w.params.max_events_per_year:
             # One-step cooldown: the agent who just acted sits out the next poll, so a
             # single agent can't monopolize the scramble WHILE others want to act.
-            others = [a for a in w.living()
-                      if a.id != last and decide.willing(w, a)]
+            others = self._poll_willing([a for a in w.living() if a.id != last])
             if others:
                 actor = w.rng.choice(others)
             else:
@@ -105,6 +104,22 @@ class Engine:
             self._initiate(actor)
             last = actor.id
             steps += 1
+
+    def _poll_willing(self, candidates):
+        """Ask each candidate whether it wants to act, concurrently. The polls are
+        independent and read-only (they never mutate the world), so running them in
+        parallel is a pure speedup. Order is preserved, so the resulting `willing`
+        list — and thus w.rng.choice over it — stays deterministic regardless of
+        which `claude -p` call returns first."""
+        if not candidates:
+            return []
+        workers = max(1, min(len(candidates), int(getattr(self.w.params, "poll_workers", 8))))
+        if workers == 1:
+            return [a for a in candidates if decide.willing(self.w, a)]
+        import concurrent.futures as _cf
+        with _cf.ThreadPoolExecutor(max_workers=workers) as ex:
+            flags = list(ex.map(lambda a: decide.willing(self.w, a), candidates))
+        return [a for a, f in zip(candidates, flags) if f]
 
     def _initiate(self, actor):
         w = self.w
