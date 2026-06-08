@@ -27,12 +27,12 @@ class Params:
     start_food: int = 2
     start_health: int = 3
     health_max: int = 3
-    # F = round(N_living * ratio). 1.15 is the recommended "stable + selective"
-    # setting: across seeds the population self-regulates (carrying-capacity
-    # equilibrium, no extinction, no explosion) while natural selection drives
-    # mean agreeableness down (~50 -> ~35; scarcity punishes costly altruism)
-    # and conscientiousness up (thrift favored). See PRESETS below.
-    ratio: float = 1.15
+    # F = round(N_living * ratio). v2 default 1.5: combat adds a large mortality
+    # channel, so the v1 "1.15" tuning is invalid — at 1.5/c=0.3 the FakeBackend
+    # village survives every seed over 50y (small, ~4-6, clan-feud-driven, with
+    # strength self-domesticating downward). Provisional; needs a proper ratio×c
+    # sweep with the real LLM backend. See PRESETS below.
+    ratio: float = 1.5
     child_cost: int = 3
     child_age: int = 21
     child_health: int = 3
@@ -47,6 +47,19 @@ class Params:
     big5_sigma: float = 8.0
     int_sigma: float = 600.0
     mem_sigma: float = 3000.0
+    # --- v2 force-and-combat model (see MVP_PLAN_V2.md) ---
+    strength_sigma: float = 8.0   # crossover sigma for Strength (0..100)
+    hp_max: int = 100             # combat life pool
+    hp_recovery: int = 25         # HP healed per year IF fed
+    hp_recovery_min_satiation: int = 2   # heal only when satiation (hunger bar) >= this
+    c_lethality: float = 0.3      # Lanchester constant: damage = c * enemy_strength
+    # halting backstops (termination guarantees, NOT cost limits)
+    max_events_per_year: int = 600
+    muster_passes_cap: int = 5
+    blow_rounds_cap: int = 12
+    convo_turns_cap: int = 6
+    # how much food an agent wants stored before it stops grabbing the pile
+    desired_buffer: int = 2
     # api
     output_allowance: int = 1500
     dead_food: str = "lost"       # "lost" | "pile" | "inherit"
@@ -62,15 +75,14 @@ class Params:
 
 BIG5 = ["openness", "conscientiousness", "extraversion", "agreeableness", "neuroticism"]
 
-# Named F/N presets (the political-intensity + selection dial). Measured over
-# 60-100 simulated years x 8 seeds with the FakeBackend:
-#   crisis    0.90 — mostly goes extinct; brutal, dramatic decline (high pressure)
-#   tense     1.00 — survives ~half the seeds; constant scarcity politics
-#   balanced  1.05 — usually survives; lively governance, frequent starvation
-#   stable    1.15 — survives every seed; carrying-capacity equilibrium + strong,
-#                     interpretable selection (agreeableness down, thrift up)  [DEFAULT]
-#   abundant  1.25 — always survives; food often spoils, weaker selection
-PRESETS = {"crisis": 0.90, "tense": 1.00, "balanced": 1.05, "stable": 1.15, "abundant": 1.25}
+# Named F/N presets (political-intensity + selection dial). Re-tuned for the v2
+# combat model (FakeBackend, 40-50y x 6-8 seeds) — combat dominates mortality, so
+# survivable ratios are higher than v1's. Provisional until a real-backend sweep:
+#   crisis    1.20 — frequent extinction; brutal clan-feud collapse
+#   tense     1.40 — usually survives; tiny, violent
+#   stable    1.50 — survives every seed; small (~4-6) clan-feud village  [DEFAULT]
+#   abundant  1.70 — survives; larger, food-rich, still violent
+PRESETS = {"crisis": 1.20, "tense": 1.40, "stable": 1.50, "abundant": 1.70}
 
 
 # --------------------------------------------------------------------------- #
@@ -143,8 +155,10 @@ class Agent:
     intelligence_tokens: int
     memory_tokens: int
     age: int
-    health: int
+    health: int                                # satiation / hunger bar, 0..3 (0 = starve)
     food: int
+    strength: int = 50                         # heritable, 0..100 (drives combat damage)
+    hp: int = 100                              # combat life pool, 0..hp_max (0 = die in combat)
     alive: bool = True
     birth_year: int = 0
     death_year: Optional[int] = None

@@ -97,7 +97,7 @@ class GitStore:
         meta = {
             "year": world.year, "branch": world.branch, "pile": world.pile,
             "next_eid": world.next_eid, "next_aid": world.next_aid,
-            "next_mid": world.next_mid, "used_names": sorted(world.used_names),
+            "used_names": sorted(world.used_names),
             "rng_state": world.rng.get_state(), "params": world.params.to_dict(),
         }
         self._write_json("meta.json", meta)
@@ -135,7 +135,6 @@ class GitStore:
         world.pile = meta["pile"]
         world.next_eid = meta["next_eid"]
         world.next_aid = meta["next_aid"]
-        world.next_mid = meta["next_mid"]
         world.used_names = set(meta["used_names"])
         for ad in agents:
             world.agents[ad["id"]] = Agent.from_dict(ad)
