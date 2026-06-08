@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from .core import Agent, BIG5, Mortality
+from .core import Agent, BIG5, Mortality, approx_tokens
 
 
 # --------------------------------------------------------------------------- #
@@ -309,11 +309,34 @@ Speak and act in character; be brief."""
         others = "; ".join(
             f"{o.name}({o.id}: {o.sex}, age {o.age}, str {o.strength}, HP {int(o.hp)}, food {o.food})"
             for o in world.living() if o.id != a.id)
-        mem = (a.memory_summary + "\n" + "\n".join(
-            f"{e.get('who','')}: {e.get('text','')}" for e in a.memory_raw[-12:])).strip()
+        mem = self._assemble_memory(a)
         return (f"Year {world.year}. Pile holds {world.pile} food. You hold {a.food} food, "
                 f"HP {int(a.hp)}/{world.params.hp_max}, satiation {a.health}/{world.params.health_max}."
                 f"\nOthers (exact): {others}\nWhat you remember:\n{mem}")
+
+    def _assemble_memory(self, a):
+        """Build the agent's working memory to fit its memory_tokens budget — the
+        heritable 'memory' dial = how much history it actually reasons over. Fill
+        recent raw events newest-first up to ~70% of the budget (so high-memory
+        agents literally carry more recent verbatim history), then prepend as much
+        of the compacted summary as the remaining budget allows."""
+        budget = max(400, int(a.memory_tokens))
+        raw_budget = int(budget * 0.7)
+        picked, used = [], 0
+        for e in reversed(a.memory_raw):
+            t = approx_tokens(e.get("text", "")) + 4
+            if picked and used + t > raw_budget:
+                break
+            picked.append(e)
+            used += t
+        picked.reverse()
+        raw_txt = "\n".join(f"{e.get('who', '')}: {e.get('text', '')}" for e in picked)
+        summary = a.memory_summary
+        sum_budget = max(0, budget - used)
+        if approx_tokens(summary) > sum_budget:          # keep the most-recent tail
+            summary = "…" + summary[-(sum_budget * 4):]
+        return (summary + ("\n" if summary and raw_txt else "") + raw_txt).strip() \
+            or "(you remember little)"
 
     def _decide(self, world, a, instruction, schema, cheap=False):
         import json
