@@ -334,9 +334,11 @@ class Engine:
         mother.repro_done_year = True
         father.repro_done_year = True
         w.agents[child.id] = child
+        big5 = " ".join(f"{t[0].upper()}{child.trait(t)}" for t in BIG5)
         w.record("birth", "village",
-                 f"{child.name} ({child.sex}, str {child.strength}) is born to "
-                 f"{mother.name} and {father.name}, age {child.age}.",
+                 f"{child.name} ({child.sex}, age {child.age}; str {child.strength}, "
+                 f"int {child.intelligence_tokens}, mem {child.memory_tokens}; "
+                 f"{big5}) is born to {mother.name} and {father.name}.",
                  payload={"child": child.id, "mother": mother.id, "father": father.id},
                  phase="convo")
         return True
