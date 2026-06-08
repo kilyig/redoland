@@ -88,10 +88,37 @@ def test_branching_diverges():
     shutil.rmtree(path, ignore_errors=True)
 
 
+def test_cli_backend_parsing():
+    """CLIBackend unwraps the `claude -p --output-format json` envelope and
+    parses the action JSON robustly — no network, no metered key."""
+    from redoland.backend import CLIBackend
+    import json
+    b = CLIBackend()
+    check(b.name == "cli", "CLIBackend reports name 'cli'")
+    env = json.dumps({"type": "result", "is_error": False,
+                      "result": "```json\n{\"kind\":\"take\",\"amount\":2}\n```"})
+    check(b._safe_json_cli(env) == {"kind": "take", "amount": 2},
+          "envelope + ```json fence parsed")
+    check(b._safe_json_cli('{"act": true}') == {"act": True}, "bare json parsed")
+    check(b._safe_json_cli(json.dumps({"result": "ok: {\"kind\":\"pass\"} done"}))
+          == {"kind": "pass"}, "prose-wrapped json extracted")
+    check(b._safe_json_cli("not json") == {}, "garbage -> {} (no-op fallback)")
+    check(b._safe_json_cli("") == {}, "empty -> {} (no-op fallback)")
+    check(not hasattr(b, "_client"), "CLIBackend holds no anthropic SDK client")
+    # _envelope surfaces stop_reason so _decide can detect a truncated answer
+    text, stop = b._envelope(json.dumps(
+        {"result": "{\"act\": true}", "stop_reason": "max_tokens"}))
+    check((text, stop) == ('{"act": true}', "max_tokens"),
+          "_envelope returns (text, stop_reason)")
+    check(b._envelope("raw text") == ("raw text", None),
+          "_envelope falls back to (raw, None) for non-envelope stdout")
+
+
 if __name__ == "__main__":
     for fn in [test_mortality_monotonic, test_rng_serialization,
                test_engine_invariants, test_combat_and_repro_occur,
-               test_determinism, test_branching_diverges]:
+               test_determinism, test_branching_diverges,
+               test_cli_backend_parsing]:
         print(fn.__name__)
         fn()
     print("\nALL SMOKE TESTS PASSED")

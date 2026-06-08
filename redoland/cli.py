@@ -30,14 +30,20 @@ def run_path(name: str) -> str:
 
 
 def make_backend(name: str):
+    if name == "cli":
+        from .backend import CLIBackend          # claude -p, session auth, no metered key
+        return CLIBackend()
     if name == "anthropic":
-        from .backend import AnthropicBackend
+        from .backend import AnthropicBackend     # metered ANTHROPIC_API_KEY — avoid
         return AnthropicBackend()
     from .backend import FakeBackend
     return FakeBackend()
 
 
-def _sim(name, backend="fake"):
+BACKENDS = ["cli", "fake", "anthropic"]            # 'cli' = real agents, no metered spend
+
+
+def _sim(name, backend="cli"):
     from .sim import Simulation
     return Simulation.open(run_path(name), make_backend(backend))
 
@@ -126,12 +132,12 @@ def build_parser():
     s.add_argument("--ratio", type=float, default=Params().ratio)
     s.add_argument("--preset", choices=list(PRESETS), default=None)
     s.add_argument("--years", type=int, default=0)
-    s.add_argument("--backend", default="fake", choices=["fake", "anthropic"])
+    s.add_argument("--backend", default="cli", choices=BACKENDS)
     s.set_defaults(fn=cmd_init)
 
     s = sub.add_parser("run", help="simulate forward on the current branch")
     s.add_argument("name"); s.add_argument("--years", type=int, default=10)
-    s.add_argument("--backend", default="fake", choices=["fake", "anthropic"])
+    s.add_argument("--backend", default="cli", choices=BACKENDS)
     s.set_defaults(fn=cmd_run)
 
     s = sub.add_parser("log", help="show branches and metrics")
@@ -153,7 +159,7 @@ def build_parser():
     s = sub.add_parser("replay", help="replay/run a branch forward")
     s.add_argument("name"); s.add_argument("--branch", required=True)
     s.add_argument("--years", type=int, default=10)
-    s.add_argument("--backend", default="fake", choices=["fake", "anthropic"])
+    s.add_argument("--backend", default="cli", choices=BACKENDS)
     s.set_defaults(fn=cmd_replay)
 
     s = sub.add_parser("edit", help="edit a recorded utterance")
