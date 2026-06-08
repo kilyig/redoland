@@ -362,9 +362,17 @@ Speak and act in character; be brief."""
         refusal / truncated response must NOT crash a multi-hour run — fall back
         to {} so the caller's .get(...) defaults apply (the agent simply no-ops
         that one micro-decision)."""
+        text = next((b.text for b in resp.content if b.type == "text"), "")
+        return AnthropicBackend._safe_json_text(text)
+
+    @staticmethod
+    def _safe_json_text(text):
+        """Robustly extract a JSON object from raw model text (shared by the SDK
+        and CLI backends): strip ``` fences, then fall back to the first {...}
+        block, then to {} so one bad reply never crashes a run."""
         import json
         import re
-        text = (next((b.text for b in resp.content if b.type == "text"), "") or "").strip()
+        text = (text or "").strip()
         if text.startswith("```"):                 # strip ```json ... ``` fences
             text = text.strip("`")
             if text[:4].lower() == "json":
@@ -499,3 +507,86 @@ Speak and act in character; be brief."""
 
     def _names(self, world, ids):
         return ", ".join(f"{world.agents[i].name}({i})" for i in ids if i in world.agents) or "none"
+
+
+# --------------------------------------------------------------------------- #
+# CLI backend (default). Routes every decision through the `claude -p` headless #
+# CLI on THIS session's auth — never the metered ANTHROPIC_API_KEY, never the   #
+# anthropic SDK. Reuses ALL of AnthropicBackend's prompt construction and the   #
+# whole decision interface; only the call mechanism (`_decide`) differs.        #
+# --------------------------------------------------------------------------- #
+
+
+class CLIBackend(AnthropicBackend):
+    """All agents on Claude via the `claude -p` CLI (session/subscription auth).
+
+    Why: the user's metered API key must never be spent. The CLI does not read
+    ANTHROPIC_API_KEY from this environment (it isn't set here) — it uses the
+    logged-in session — so a full run costs $0 on the metered key.
+
+    Trade-offs vs the SDK path:
+      * No native structured-output flag — we fold the JSON schema into the
+        prompt and parse robustly with `_safe_json_text` (same fallbacks).
+      * The per-agent intelligence dial is driven via the MAX_THINKING_TOKENS
+        env var (Claude Code's thinking control) instead of `thinking.budget`.
+      * Each call spawns a fresh CLI process (~3-6s), so runs are much slower
+        than the SDK; correctness and zero-metered-spend are the priorities.
+    """
+
+    name = "cli"
+
+    def __init__(self):
+        import os
+        self._mortality = Mortality()   # so the prompt can state each agent's age-death odds
+        self.AGENT_MODEL = os.environ.get("REDOLAND_AGENT_MODEL", "claude-haiku-4-5")
+        self.CHEAP_MODEL = os.environ.get("REDOLAND_CHEAP_MODEL", "claude-haiku-4-5")
+        self.use_thinking = os.environ.get("REDOLAND_THINKING", "1") != "0"
+        self.CLI = os.environ.get("REDOLAND_CLAUDE_BIN", "claude")
+        self.timeout = int(os.environ.get("REDOLAND_CLI_TIMEOUT", "180"))
+
+    def _decide(self, world, a, instruction, schema, cheap=False):
+        import json
+        import os
+        import subprocess
+        sysp = self.system_prompt(world, a)
+        # The CLI has no structured-output flag, so we ask for raw JSON in the
+        # prompt and lean on _safe_json_text's fence-strip + {...} extraction.
+        prompt = (f"{self._situation(world, a)}\n\n{instruction}\n\n"
+                  "Respond with ONLY a single JSON object matching this schema — "
+                  "no prose, no markdown, no code fences:\n"
+                  f"{json.dumps(schema)}")
+        model = self.CHEAP_MODEL if cheap else self.AGENT_MODEL
+        env = dict(os.environ)
+        env.pop("ANTHROPIC_API_KEY", None)          # belt-and-suspenders: never the metered key
+        if cheap or not self.use_thinking:
+            env["MAX_THINKING_TOKENS"] = "0"
+        else:
+            env["MAX_THINKING_TOKENS"] = str(max(1024, int(a.intelligence_tokens)))
+        try:
+            proc = subprocess.run(
+                [self.CLI, "-p", prompt,
+                 "--system-prompt", sysp,
+                 "--model", model,
+                 "--output-format", "json",
+                 "--no-session-persistence"],
+                capture_output=True, text=True, timeout=self.timeout, env=env)
+        except Exception:
+            return {}                               # process/timeout failure → no-op this decision
+        return self._safe_json_cli(proc.stdout)
+
+    @staticmethod
+    def _safe_json_cli(stdout):
+        """Unwrap the `claude -p --output-format json` envelope ({...,result:...})
+        to the assistant's text, then parse the action JSON from it."""
+        import json
+        raw = (stdout or "").strip()
+        if not raw:
+            return {}
+        text = raw
+        try:
+            env = json.loads(raw)
+            if isinstance(env, dict) and "result" in env:
+                text = env.get("result") or ""
+        except Exception:
+            pass                                    # not an envelope — treat stdout as the text
+        return AnthropicBackend._safe_json_text(text)
