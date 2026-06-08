@@ -89,10 +89,71 @@ def serve(path, port=8000):
             n = int(self.headers.get("Content-Length", 0))
             return json.loads(self.rfile.read(n) or b"{}")
 
+        def _sse_live(self):
+            """Tail runs/<name>/live.jsonl and stream new events over SSE — the
+            turn-by-turn feed the viewer follows in real time. Self-contained:
+            sends its own headers, swallows disconnects, never raises."""
+            import time
+            path = os.path.join(viewer.path, "live.jsonl")
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+            except Exception:
+                return
+            pos = max(0, os.path.getsize(path) - 65536) if os.path.exists(path) else 0
+            drop_partial = pos > 0
+            idle = 0
+            try:
+                while True:
+                    if os.path.exists(path):
+                        size = os.path.getsize(path)
+                        if size < pos:               # file truncated → new run
+                            pos, drop_partial = 0, False
+                        if size > pos:
+                            with open(path) as f:
+                                f.seek(pos)
+                                data = f.read()
+                                pos = f.tell()
+                            lines = data.splitlines()
+                            if drop_partial and lines:   # started mid-file; skip partial line
+                                lines = lines[1:]
+                            drop_partial = False
+                            for ln in lines:
+                                ln = ln.strip()
+                                if not ln:
+                                    continue
+                                try:
+                                    self.wfile.write(b"data: " + ln.encode() + b"\n\n")
+                                except Exception:
+                                    return
+                            try:
+                                self.wfile.flush()
+                            except Exception:
+                                return
+                            idle = 0
+                            time.sleep(0.2)
+                            continue
+                    idle += 1
+                    if idle % 10 == 0:               # heartbeat (also detects disconnect)
+                        try:
+                            self.wfile.write(b": keepalive\n\n")
+                            self.wfile.flush()
+                        except Exception:
+                            return
+                    time.sleep(0.3)
+            except Exception:
+                return
+
         def do_GET(self):
             u = urlparse(self.path)
             q = {k: v[0] for k, v in parse_qs(u.query).items()}
             try:
+                if u.path == "/api/live":
+                    return self._sse_live()
                 if u.path in ("/", "/index.html"):
                     with open(os.path.join(_STATIC, "index.html"), "rb") as fh:
                         return self._send(fh.read(), ctype="text/html; charset=utf-8")

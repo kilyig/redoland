@@ -56,11 +56,48 @@ class Simulation:
             self.store.checkout_branch(eng.w.branch)
         except Exception:
             pass
-        for _ in range(years):
-            eng.run_year()
-            self.store.commit_year(eng.w, f"{eng.w.branch} year {eng.w.year}")
-            log(eng.w.year, eng.w)
+        live = self._open_live(eng.w)            # turn-by-turn live feed for the viewer
+        eng.w.event_sink = live["sink"]
+        try:
+            for _ in range(years):
+                eng.run_year()
+                self.store.commit_year(eng.w, f"{eng.w.branch} year {eng.w.year}")
+                log(eng.w.year, eng.w)
+        finally:
+            eng.w.event_sink = None
+            live["close"]()
         return eng.w
+
+    def _open_live(self, world):
+        """Append every event to runs/<name>/live.jsonl as it happens, so the web
+        viewer can stream it turn-by-turn (SSE). Truncated at the start of each run.
+        The file is git-ignored inside the run repo (see GitStore.init_repo)."""
+        path = os.path.join(self.store.path, "live.jsonl")
+        try:
+            with open(path, "w") as fh:
+                fh.write(json.dumps({
+                    "eid": "live", "year": world.year, "phase": "meta",
+                    "kind": "run_start", "speaker": "village", "who": "the village",
+                    "audience": "public", "payload": {},
+                    "text": f"live run — branch {world.branch}, continuing after year {world.year}",
+                }) + "\n")
+            fh = open(path, "a")
+        except OSError:
+            return {"sink": lambda ev: None, "close": lambda: None}
+
+        def sink(ev):
+            try:
+                fh.write(json.dumps(ev) + "\n")
+                fh.flush()
+            except Exception:
+                pass
+
+        def close():
+            try:
+                fh.close()
+            except Exception:
+                pass
+        return {"sink": sink, "close": close}
 
     # -- fork ------------------------------------------------------------- #
     def fork(self, parent_branch: str, year: int, new_branch: str = None):

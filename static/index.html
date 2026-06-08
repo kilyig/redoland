@@ -47,6 +47,10 @@
           border:1px solid var(--line); border-radius:4px; padding:3px 6px; }
   button { cursor:pointer; }
   button.go { background:var(--accent); color:#14110e; border:none; font-weight:700; }
+  #livebtn { border:1px solid var(--line); }
+  #livebtn.on { color:#14110e; background:var(--bad); border-color:var(--bad);
+                animation:pulse 1.1s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.55} }
   .row { display:flex; gap:6px; margin:4px 0; align-items:center; }
   .row label { color:var(--dim); min-width:54px; font-size:12px; }
   .row input { flex:1; min-width:0; }
@@ -59,7 +63,8 @@
 <body>
 <header>
   <b>REDOLAND</b><span id="runname"></span>
-  <span style="margin-left:auto" id="status"></span>
+  <button id="livebtn" onclick="toggleLive()" style="margin-left:auto">● Live</button>
+  <span id="status"></span>
 </header>
 <div class="wrap">
   <div class="col" id="left">
@@ -250,6 +255,31 @@ async function drawChart() {
   $('chart').innerHTML = svg;
   $('chartlegend').innerHTML = series.map((s,i)=>
     `<span style="color:${palette[i%palette.length]}">■ ${s.branch}</span>`).join('  ');
+}
+
+// --- live turn-by-turn feed (SSE) ---
+let ES = null;
+function toggleLive(){
+  const btn = $('livebtn');
+  if (ES){ ES.close(); ES = null; btn.classList.remove('on'); btn.textContent = '● Live';
+    if (SEL.branch) selectYear(SEL.branch, SEL.year); else $('events').innerHTML='';
+    return; }
+  $('transcript-title').textContent = 'Live feed — streaming as the run happens';
+  $('mlabel').textContent = 'LIVE'; $('events').innerHTML = '';
+  ES = new EventSource('/api/live');
+  ES.onmessage = (e) => { let ev; try { ev = JSON.parse(e.data); } catch(_) { return; }
+    appendLiveEvent(ev); };
+  btn.classList.add('on'); btn.textContent = '● LIVE';
+}
+function appendLiveEvent(e){
+  const el = $('events');
+  const d = document.createElement('div');
+  d.className = 'ev ' + (e.kind || '');
+  d.innerHTML = `<div class="k">${e.kind||''}</div><div class="body" style="flex:1">`+
+    `<span class="who">${e.who||''}</span>${e.text? ': '+escapeHtml(e.text) : ''}</div>`;
+  el.appendChild(d);
+  while (el.children.length > 500) el.removeChild(el.firstChild);
+  const c = document.getElementById('center'); c.scrollTop = c.scrollHeight;
 }
 
 const u = new URLSearchParams(location.search);
