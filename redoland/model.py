@@ -18,6 +18,7 @@ only extra dependency and the checkpoints embedder-free).
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -84,6 +85,19 @@ class ClaudeCLIModel(language_model.LanguageModel):
         self._model = model
         self._cli = cli or os.environ.get("REDOLAND_CLAUDE_BIN", "claude")
         self._timeout = timeout
+        self._think_choices = False    # gating CHOICEs are cheap unless a caller opts in
+
+    @contextlib.contextmanager
+    def deliberate_on_choices(self):
+        """Within this block, sample_choice spends the agent's thinking budget instead
+        of snap-judging — for the rare CHOICE that deserves real deliberation (e.g.
+        a life-or-death decision to join a fight)."""
+        prev = self._think_choices
+        self._think_choices = True
+        try:
+            yield
+        finally:
+            self._think_choices = prev
 
     # -- core CLI call --------------------------------------------------- #
     def _run(self, prompt: str, *, thinking: Optional[int] = None) -> str:
@@ -137,11 +151,13 @@ class ClaudeCLIModel(language_model.LanguageModel):
         q = (prompt.rstrip() + "\n\nReply with ONLY your choice, exactly as written "
              "(no explanation): " + " | ".join(opts))
         order = sorted(range(len(opts)), key=lambda j: -len(opts[j]))   # longest first
-        # Gating / enum picks (willing?, accept?, press-or-flee, …) are snap judgments
-        # — they run with NO extended thinking. The agent's intelligence budget is
-        # spent on the substantive generative decisions (sample_text: what to do / say).
+        # Gating / enum picks (willing?, press-or-flee, …) are snap judgments — they run
+        # with NO extended thinking. The agent's intelligence budget is spent on the
+        # substantive generative decisions (sample_text), and on any CHOICE a caller has
+        # wrapped in deliberate_on_choices() (e.g. accept_join).
         for attempt in range(3):
-            raw = self._run(q, thinking=0).strip().lower()
+            think = self._thinking if (self._think_choices and attempt == 0) else 0
+            raw = self._run(q, thinking=think).strip().lower()
             for i in order:
                 o = opts[i].lower()
                 if len(o) == 1:
@@ -166,6 +182,10 @@ class StubModel(language_model.LanguageModel):
         self._choice_fn = choice_fn or (lambda prompt, responses: 0)
         self._text_fn = text_fn or (lambda prompt: "")
         self.calls: list[tuple[str, str]] = []
+
+    @contextlib.contextmanager
+    def deliberate_on_choices(self):
+        yield                          # no-op for the deterministic stub
 
     def sample_text(self, prompt: str, *, max_tokens: int = 5000,
                     terminators: Collection[str] = (), temperature: float = 1.0,

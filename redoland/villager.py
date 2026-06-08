@@ -19,6 +19,7 @@ _SITUATION_KEY = "situation"
 def build_villager(world, agent_id: str):
     body = world.agents[agent_id]
     model = world.model_factory(int(body.intelligence_tokens))
+    world.models[agent_id] = model            # so decide can toggle deliberation per call
     context = VillagerContext(world, agent_id)
     act = concat_act_component.ConcatActComponent(
         model=model,

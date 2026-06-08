@@ -27,10 +27,18 @@ from .core import BIG5
 # --------------------------------------------------------------------------- #
 
 
-def _choice(world, a, call_to_action: str, options: list[str]) -> int:
-    """Return the index of the chosen option."""
+def _choice(world, a, call_to_action: str, options: list[str], deliberate: bool = False) -> int:
+    """Return the index of the chosen option. CHOICEs are snap judgments (no thinking)
+    by default; pass deliberate=True to spend the agent's thinking budget on this one
+    (for weighty calls like joining a fight)."""
     spec = entity_lib.choice_action_spec(call_to_action=call_to_action, options=options)
-    out = world.mind(a.id).act(spec)
+    mind = world.mind(a.id)
+    model = world.models.get(a.id)
+    if deliberate and model is not None and hasattr(model, "deliberate_on_choices"):
+        with model.deliberate_on_choices():
+            out = mind.act(spec)
+    else:
+        out = mind.act(spec)
     for i, o in enumerate(options):
         if out == o:
             return i
@@ -133,10 +141,16 @@ def recruit_invites(world, member, side, opposing, label) -> list[str]:
 
 
 def accept_join(world, a, side, opposing, label) -> bool:
+    def _strength(ids):
+        return sum(world.agents[i].strength for i in ids
+                   if i in world.agents and world.agents[i].alive)
+    # Deliberate: joining a fight is a life-or-death call, so spend the thinking budget.
     return _choice(world, a,
-        f"You are asked to join the {label}ers ({_names(world, side)}) against "
-        f"({_names(world, opposing)}). Fighting costs HP and can kill. Do you join?",
-        ["Join", "Stay out"]) == 0
+        f"A fight is forming and you are asked to join the {label}ers. "
+        f"Your side ({_names(world, side)}) — total strength {_strength(side)}. "
+        f"Against ({_names(world, opposing)}) — total strength {_strength(opposing)}. "
+        f"Fighting costs HP and can kill. Weigh the odds and your stake in it. Do you join?",
+        ["Join", "Stay out"], deliberate=True) == 0
 
 
 def attacker_decision(world, a, attackers, defenders) -> str:

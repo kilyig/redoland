@@ -156,7 +156,8 @@ class Engine:
         if decide.respond_child(w, partner, initiator, share):
             if not self._birth(initiator, partner, share):
                 w.record("convo", partner.id,
-                         f"{partner.name} agrees, but they cannot spare the food.",
+                         f"{partner.name} agrees, but no child comes of it "
+                         f"(they cannot spare the food, or the mother is past childbearing age).",
                          audience=grp, phase="convo")
         else:
             w.record("reject", partner.id, f"{partner.name} declines.",
@@ -319,6 +320,8 @@ class Engine:
         mother = proposer if proposer.sex == "female" else partner
         father = partner if proposer.sex == "female" else proposer
         if mother.bore_this_year:
+            return False
+        if mother.age > w.params.max_maternal_age:   # past childbearing age (men: no limit)
             return False
         proposer.food -= proposer_share
         partner.food -= partner_share

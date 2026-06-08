@@ -44,6 +44,7 @@ class Params:
     child_cost: int = 3
     child_age: int = 21
     child_health: int = 3
+    max_maternal_age: int = 45    # a woman can bear children only up to this age (men: no limit)
     repro_rounds: int = 2
     meeting_slots_per_agent: int = 10
     # Group conversations have NO turn limit — they end only when no one in the

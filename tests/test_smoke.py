@@ -163,6 +163,28 @@ def test_birth_crossover():
     check(set(c.parents) == {"a001", "a002"}, "child kin links set")
 
 
+def test_max_maternal_age():
+    """A woman past max_maternal_age cannot bear a child; the father's age is irrelevant."""
+    stub = StubModel(choice_fn=lambda p, r: 0, text_fn=lambda p: "")
+    w = World(Params(child_cost=3, max_maternal_age=45), RNG(5),
+              model_factory=lambda t: stub, randomize_choices=False); w.year = 2
+    mkbody(w, "a001", "Eron", "male", age=70, food=4)        # old father — allowed
+    mkbody(w, "a002", "Kesh", "female", age=50, food=4)      # mother past 45 — blocked
+    eng = Engine(w); w.year_events = []
+    before = set(w.agents)
+    eng._convo_chunk(w.agents["a001"], {"partner": "a002", "my_share": 1})
+    check(set(w.agents) == before, "no child born to a mother past max_maternal_age")
+    # a young mother with an old father still works (no paternal limit)
+    w2 = World(Params(child_cost=3, max_maternal_age=45), RNG(5),
+               model_factory=lambda t: stub, randomize_choices=False); w2.year = 2
+    mkbody(w2, "a001", "Eron", "male", age=70, food=4)
+    mkbody(w2, "a002", "Kesh", "female", age=30, food=4)
+    eng2 = Engine(w2); w2.year_events = []
+    before2 = set(w2.agents)
+    eng2._convo_chunk(w2.agents["a001"], {"partner": "a002", "my_share": 1})
+    check(len(set(w2.agents) - before2) == 1, "young mother + old father can still have a child")
+
+
 def test_group_talk():
     speak = {"n": 0}
     def cf(prompt, responses):
@@ -215,7 +237,7 @@ def test_distributions():
 if __name__ == "__main__":
     for fn in [test_model_parsing, test_engine_invariants, test_sole_actor_can_continue,
                test_determinism,
-               test_combat_resolves, test_birth_crossover, test_group_talk,
+               test_combat_resolves, test_birth_crossover, test_max_maternal_age, test_group_talk,
                test_worldline_fork_inject_replay, test_distributions]:
         print(fn.__name__)
         fn()
