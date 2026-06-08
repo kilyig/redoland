@@ -89,6 +89,29 @@ def test_engine_invariants():
     check(len(eng.w.minds) >= len(eng.w.living()), "every living agent has a mind")
 
 
+def test_sole_actor_can_continue():
+    """A lone willing agent (e.g. the last survivor) must be able to act more than
+    once per year. The one-step cooldown must skip them only while OTHERS want to
+    act — it must not freeze them out and end the year early."""
+    def cf(prompt, responses):
+        if "do you want to ACT" in prompt:
+            f = _parse(prompt, r"You hold (\d+) food"); pile = _parse(prompt, r"pile holds (\d+) food")
+            return 0 if (f < 3 and pile > 0) else 1
+        return 0
+    def tf(prompt):
+        if "Choose ONE action now" in prompt:
+            f = _parse(prompt, r"You hold (\d+) food"); pile = _parse(prompt, r"pile holds (\d+) food")
+            return '{"kind":"take","amount":1}' if (pile > 0 and f < 3) else '{"kind":"pass"}'
+        return "0"
+    stub = StubModel(choice_fn=cf, text_fn=tf)
+    w = World(Params(ratio=5.0, start_food=0), RNG(1),
+              model_factory=lambda t: stub, randomize_choices=False)
+    mkbody(w, "a001", "Solo", "male", food=0)        # a sole survivor
+    Engine(w).run_year()
+    takes = [e for e in w.year_events if e["kind"] == "take"]
+    check(len(takes) >= 2, f"lone agent acts repeatedly in a year (got {len(takes)} takes)")
+
+
 def test_determinism():
     def world():
         stub = survival_stub()
@@ -190,7 +213,8 @@ def test_distributions():
 
 
 if __name__ == "__main__":
-    for fn in [test_model_parsing, test_engine_invariants, test_determinism,
+    for fn in [test_model_parsing, test_engine_invariants, test_sole_actor_can_continue,
+               test_determinism,
                test_combat_resolves, test_birth_crossover, test_group_talk,
                test_worldline_fork_inject_replay, test_distributions]:
         print(fn.__name__)
