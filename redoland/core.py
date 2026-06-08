@@ -46,6 +46,10 @@ class Params:
     child_health: int = 3
     repro_rounds: int = 2
     meeting_slots_per_agent: int = 10
+    # Group conversations have NO turn limit — they end only when no one in the
+    # group wants to speak. This is purely a runaway guard so a year cannot hang
+    # forever if the model never falls silent; it is not a conversational limit.
+    convo_safety_cap: int = 200
     # cognition ranges (continuous heritable dials)
     int_min: int = 1024
     int_max: int = 8000
