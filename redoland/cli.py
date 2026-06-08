@@ -1,14 +1,8 @@
-"""Redoland command line (Concordia engine).
+"""Redoland command line.
 
-    python -m redoland init world --founders 6 --years 5
-    python -m redoland run world --years 5
-    python -m redoland fork world --parent main --year 3 --name drought
-    python -m redoland inject world --branch drought --ratio 0.6 --narrate "drought"
-    python -m redoland replay world --branch drought --years 5
-    python -m redoland log world
-    python -m redoland serve            # web UI over the whole runs/ dir
-
-All inference runs through `claude -p` (session auth, never the metered key).
+Run `python -m redoland -h` for the full overview (mental model, the fork/inject/run
+workflow, and the inject --changes schema), and `python -m redoland <command> -h` for
+any command. All inference runs through `claude -p` (session auth, never the metered key).
 """
 
 from __future__ import annotations
@@ -112,55 +106,153 @@ def cmd_metrics(a):
     print(json.dumps(snapshot_metrics(s.load_world(s.tag(a.branch, a.year))), indent=2))
 
 
+def cmd_diff(a):
+    d = _sim(a.name).diff(a.branch_a, a.year_a, a.branch_b, a.year_b)
+    print(json.dumps(d, indent=2))
+
+
 def cmd_serve(a):
     from .server import serve
     serve(os.path.abspath(a.runs_dir), port=a.port)
 
 
+_OVERVIEW = """\
+Redoland — a generational LLM-agent village simulation with git-backed worldlines.
+
+MENTAL MODEL
+  * A RUN is a village, stored as its own git repo under runs/<name>/.
+  * Time advances in YEARS: food appears in a central pile, agents take/give/talk/
+    fight/reproduce, then at year's end they eat, age, and may die.
+  * Every single agent ACTION is its own git commit. A WORLDLINE is a git branch.
+  * You FORK a new worldline from ANY action, optionally INJECT an event (a change +
+    a public explanation), then RUN it forward and COMPARE branches. This is the
+    counterfactual "what if X had happened?" loop.
+  * All agent inference runs through the `claude -p` CLI on this session's auth —
+    NEVER the metered ANTHROPIC_API_KEY.
+
+TYPICAL WORKFLOW (what an operating AI does)
+  1. redoland timeline <run> --branch main          # find a fork point (a commit)
+  2. redoland fork <run> --at <commit> --name whatif # branch from that exact action
+  3. redoland inject <run> --branch whatif \\
+        --narrate "An earthquake strikes." \\
+        --changes '{"kill":["a005"],"pile":{"set":0}}'   # an event (public to all)
+  4. redoland run <run> --branch whatif --years 5    # run the new worldline forward
+  5. redoland diff <run> main 10 whatif 15           # compare outcomes
+
+INJECT --changes SCHEMA (all keys optional; everything is PUBLIC to all agents)
+  {
+    "agents": {"a003": {"food": 5, "hp": 10, "satiation": 1}},  # set per-agent values
+    "kill":   ["a005"],                                          # agents who die
+    "pile":   {"set": 0} | {"add": 20},                          # the plaza's food
+    "spawn":  [{"sex":"female","age":25,"strength":60,"food":4}],# a newcomer arrives
+    "params": {"ratio": 0.5}                                     # a rule change, going forward
+  }
+  Agent ids (a001, a002, …) come from `redoland state` / `redoland timeline`.
+
+NOTES
+  * Don't run two processes against the SAME run at once (they share one git repo).
+  * Don't restart a run while a year is well underway — the uncommitted in-progress
+    year is discarded. Committed years (git) are always safe.
+  * The web UI (`redoland serve`) is read-only + a Start/Pause button; creating and
+    forking worldlines is done here, via this CLI.
+"""
+
+
 def build_parser():
-    p = argparse.ArgumentParser(prog="redoland")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    p = argparse.ArgumentParser(
+        prog="redoland", description=_OVERVIEW,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True, metavar="<command>")
 
-    s = sub.add_parser("init"); s.add_argument("name")
-    s.add_argument("--seed", type=int, default=1); s.add_argument("--founders", type=int, default=6)
-    s.add_argument("--ratio", type=float, default=Params().ratio)
-    s.add_argument("--preset", choices=list(PRESETS), default=None)
-    s.add_argument("--years", type=int, default=0); s.set_defaults(fn=cmd_init)
+    s = sub.add_parser("init", help="create a new village (run) and optionally run it",
+                       description="Create a new run under runs/<name>/ with founders.")
+    s.add_argument("name", help="run name (a folder under runs/)")
+    s.add_argument("--seed", type=int, default=1, help="RNG seed for the founding (default 1)")
+    s.add_argument("--founders", type=int, default=6, help="number of founding villagers (default 6)")
+    s.add_argument("--ratio", type=float, default=Params().ratio,
+                   help="food-per-person ratio: pile = round(ratio * population) (default %(default)s)")
+    s.add_argument("--preset", choices=list(PRESETS), default=None,
+                   help="named scarcity preset (overrides --ratio)")
+    s.add_argument("--years", type=int, default=0, help="run this many years immediately (default 0)")
+    s.set_defaults(fn=cmd_init)
 
-    s = sub.add_parser("run"); s.add_argument("name"); s.add_argument("--years", type=int, default=5)
-    s.add_argument("--branch", default=None); s.set_defaults(fn=cmd_run)
+    s = sub.add_parser("run", help="run a branch forward N years (continues from where it is)",
+                       description="Continue a worldline forward, committing after every action.")
+    s.add_argument("name", help="run name")
+    s.add_argument("--years", type=int, default=5, help="how many years to advance (default 5)")
+    s.add_argument("--branch", default=None, help="branch to run (default: current/checked-out)")
+    s.set_defaults(fn=cmd_run)
 
-    s = sub.add_parser("log"); s.add_argument("name"); s.set_defaults(fn=cmd_log)
+    s = sub.add_parser("log", help="list branches with summary metrics",
+                       description="Show every worldline (branch) and its tip metrics.")
+    s.add_argument("name", help="run name"); s.set_defaults(fn=cmd_log)
 
-    s = sub.add_parser("timeline", help="per-action commit history (fork points)")
-    s.add_argument("name"); s.add_argument("--branch", default=None)
-    s.add_argument("--n", type=int, default=40); s.set_defaults(fn=cmd_timeline)
+    s = sub.add_parser("timeline", help="per-action commit history — these are the fork points",
+                       description="List recent action-commits (hash + the event). Pick one to fork from.")
+    s.add_argument("name", help="run name")
+    s.add_argument("--branch", default=None, help="branch to list (default: current)")
+    s.add_argument("--n", type=int, default=40, help="how many recent commits to show (default 40)")
+    s.set_defaults(fn=cmd_timeline)
 
-    s = sub.add_parser("state", help="world snapshot (roster) at a branch/year/commit")
-    s.add_argument("name"); s.add_argument("--branch", default="main")
-    s.add_argument("--year", type=int, default=None); s.add_argument("--at", default=None)
+    s = sub.add_parser("state", help="world snapshot — the living roster + each agent's stats",
+                       description="Print who is alive and their food/HP/strength/age/etc. and "
+                                   "their agent ids (a001…). Use ids in `inject`.")
+    s.add_argument("name", help="run name")
+    s.add_argument("--branch", default="main", help="branch to inspect (default main)")
+    s.add_argument("--year", type=int, default=None, help="a completed year's end-state")
+    s.add_argument("--at", default=None, help="a specific commit hash (any action)")
     s.set_defaults(fn=cmd_state)
 
-    s = sub.add_parser("fork"); s.add_argument("name"); s.add_argument("--parent", default="main")
-    s.add_argument("--year", type=int, default=None)
-    s.add_argument("--at", default=None, help="commit hash to fork from (any action)")
-    s.add_argument("--name", dest="fork_name", default=None)
+    s = sub.add_parser("fork", help="branch a new worldline from any action (or a year)",
+                       description="Create a new branch from a commit (--at, any action) or a "
+                                   "year tag (--year). Then inject and/or run it.")
+    s.add_argument("name", help="run name")
+    s.add_argument("--at", default=None, help="commit hash to fork from (from `timeline`) — forks at ANY action")
+    s.add_argument("--parent", default="main", help="parent branch when forking by --year (default main)")
+    s.add_argument("--year", type=int, default=None, help="fork from the end of this completed year")
+    s.add_argument("--name", dest="fork_name", default=None, help="name for the new worldline")
     s.set_defaults(fn=cmd_fork)
 
-    s = sub.add_parser("inject"); s.add_argument("name"); s.add_argument("--branch", required=True)
-    s.add_argument("--changes", default=None, help="JSON: agents/kill/pile/spawn/params")
-    s.add_argument("--narrate", default=None, help="the explanation shown to all agents")
-    s.add_argument("--ratio", type=float, default=None); s.add_argument("--pile", type=int, default=None)
+    s = sub.add_parser("inject", help="inject an event (a change + a public explanation) as a commit",
+                       description="Apply a manipulation at the branch tip. The explanation AND the "
+                                   "mechanical effects are recorded into every agent's memory. See the "
+                                   "--changes schema in the top-level `redoland -h`.")
+    s.add_argument("name", help="run name")
+    s.add_argument("--branch", required=True, help="branch to inject into")
+    s.add_argument("--narrate", default=None, help="the human explanation shown to ALL agents (the 'why')")
+    s.add_argument("--changes", default=None,
+                   help="JSON of the changes: keys agents/kill/pile/spawn/params (see `redoland -h`)")
+    s.add_argument("--ratio", type=float, default=None, help="shortcut: change the food ratio")
+    s.add_argument("--pile", type=int, default=None, help="shortcut: set the plaza's food")
     s.set_defaults(fn=cmd_inject)
 
-    s = sub.add_parser("replay"); s.add_argument("name"); s.add_argument("--branch", required=True)
-    s.add_argument("--years", type=int, default=5); s.set_defaults(fn=cmd_replay)
+    s = sub.add_parser("replay", help="checkout a branch and run it forward N years",
+                       description="Same as `run --branch B`: checkout then advance N years.")
+    s.add_argument("name", help="run name")
+    s.add_argument("--branch", required=True, help="branch to replay")
+    s.add_argument("--years", type=int, default=5, help="years to advance (default 5)")
+    s.set_defaults(fn=cmd_replay)
 
-    s = sub.add_parser("metrics"); s.add_argument("name"); s.add_argument("--branch", default="main")
-    s.add_argument("--year", type=int, required=True); s.set_defaults(fn=cmd_metrics)
+    s = sub.add_parser("metrics", help="full JSON metrics for one branch/year",
+                       description="Population, deaths, food Gini, trait/cognition means, etc.")
+    s.add_argument("name", help="run name")
+    s.add_argument("--branch", default="main", help="branch (default main)")
+    s.add_argument("--year", type=int, required=True, help="completed year to report")
+    s.set_defaults(fn=cmd_metrics)
 
-    s = sub.add_parser("serve"); s.add_argument("--runs-dir", default="runs")
-    s.add_argument("--port", type=int, default=8000); s.set_defaults(fn=cmd_serve)
+    s = sub.add_parser("diff", help="compare two branch/year snapshots side by side",
+                       description="Metrics for A@yearA vs B@yearB — the payoff of a counterfactual.")
+    s.add_argument("name", help="run name")
+    s.add_argument("branch_a", help="first branch"); s.add_argument("year_a", type=int, help="first year")
+    s.add_argument("branch_b", help="second branch"); s.add_argument("year_b", type=int, help="second year")
+    s.set_defaults(fn=cmd_diff)
+
+    s = sub.add_parser("serve", help="launch the read-only web UI (Start/Pause a branch)",
+                       description="Web viewer over the whole runs/ dir: year tabs, transcripts, "
+                                   "live stream, stat distributions, and a Start/Pause button.")
+    s.add_argument("--runs-dir", default="runs", help="directory of runs to serve (default ./runs)")
+    s.add_argument("--port", type=int, default=8000, help="port (default 8000)")
+    s.set_defaults(fn=cmd_serve)
     return p
 
 
