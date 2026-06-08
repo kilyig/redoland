@@ -86,11 +86,22 @@ class Engine:
         last = None
         steps = 0
         while steps < w.params.max_events_per_year:
-            willing = [a for a in w.living()
-                       if a.id != last and decide.willing(w, a)]
-            if not willing:
-                break
-            actor = w.rng.choice(willing)
+            # One-step cooldown: the agent who just acted sits out the next poll, so a
+            # single agent can't monopolize the scramble WHILE others want to act.
+            others = [a for a in w.living()
+                      if a.id != last and decide.willing(w, a)]
+            if others:
+                actor = w.rng.choice(others)
+            else:
+                # No one ELSE wants to act. Don't end the year on the cooldown alone —
+                # let the just-acted agent continue if they still want to (e.g. a sole
+                # survivor, or the last willing person, securing more food). The year is
+                # quiescent only when no one at all wants to act.
+                la = w.agents.get(last) if last else None
+                if la and la.alive and decide.willing(w, la):
+                    actor = la
+                else:
+                    break
             self._initiate(actor)
             last = actor.id
             steps += 1
