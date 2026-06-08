@@ -41,6 +41,7 @@
   .ev.death .who, .ev.outcome .who { color:var(--bad); }
   .ev.attack .k, .ev.blow .k, .ev.muster .k, .ev.join .k, .ev.flee .k,
   .ev.submit .k, .ev.cancel .k { color:var(--bad); }
+  .ev.eat { opacity:.55; }
   .empty { color:var(--dim); }
   /* stats */
   table.stats { width:100%; border-collapse:collapse; }
@@ -69,8 +70,9 @@ const api = p => fetch(p).then(r => r.json());
 const escapeHtml = s => (s||'').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 let YEARS = [], SEL = null, ES = null;
 
-// kinds hidden from the transcript (private bookkeeping / noise)
-const HIDE = new Set(['eat','pass','compaction','under_attack']);
+// kinds hidden from the transcript (private bookkeeping / noise).
+// 'eat' (year-end) IS shown — just dimmed — so the year-end phase is visible.
+const HIDE = new Set(['pass','compaction','under_attack']);
 
 async function loadYears(keepSel){
   const tree = await api('/api/tree');
