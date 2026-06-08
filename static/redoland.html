@@ -17,7 +17,7 @@
   button.go { background:var(--accent); color:#14110e; border-color:var(--accent); font-weight:700; }
   .sep { width:1px; align-self:stretch; background:var(--line); margin:0 2px; }
   .status { margin-left:auto; color:var(--dim); }
-  .status.run { color:var(--bad); animation:pulse 1.1s infinite; }
+  .status.run { color:var(--bad); animation:pulse 1.1s infinite; cursor:pointer; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
   .wrap { display:grid; grid-template-columns:130px 1fr 320px; height:calc(100vh - 86px); }
   .col { overflow:auto; padding:12px; } .col + .col { border-left:1px solid var(--line); }
@@ -59,7 +59,7 @@
   <span class="sep"></span>
   <input id="cyears" value="3" title="years"><button onclick="continueWorldline()">Continue</button>
   <button onclick="forkWorldline()" title="fork the selected year into a new worldline">Fork @year</button>
-  <span class="status" id="status">idle</span>
+  <span class="status" id="status" onclick="goLive()" title="click to follow the live run">idle</span>
 </header>
 <div class="wrap">
   <div class="col" id="left"><h3>Years</h3><div id="years"></div></div>
@@ -76,6 +76,8 @@ const api = (p) => fetch(p).then(r => r.json());
 const esc = s => (s||'').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 const HIDE = new Set(['pass','compaction','under_attack']);
 let RUN=null, BR=null, YEARS=[], SEL=null, ES=null, TAB='sum', LASTDIST={};
+let FOLLOW=true;   // auto-follow the live feed of a running job (off once you pick a year)
+let JOB_RUN=null, JOB_BR=null;   // the currently running job's run/branch (for "go live")
 
 async function loadRuns(){
   const d = await api('/api/runs'); const sel = $('runsel');
@@ -94,12 +96,12 @@ async function loadTree(keepYear){
   renderYears();
   if (!ES && (!keepYear || !YEARS.includes(SEL)) && YEARS.length) selectYear(YEARS[YEARS.length-1]);
 }
-function selectBranch(b){ BR=b; SEL=null; loadTree(); }
+function selectBranch(b){ FOLLOW=false; stopLive(); BR=b; SEL=null; loadTree(); }
 function renderYears(){
   $('years').innerHTML='';
   YEARS.forEach(y=>{ const btn=document.createElement('button');
     btn.className='yr'+(y===SEL&&!ES?' sel':''); btn.textContent='Year '+y;
-    btn.onclick=()=>{ if(ES) toggleLive(); selectYear(y); }; $('years').appendChild(btn); });
+    btn.onclick=()=>{ FOLLOW=false; stopLive(); selectYear(y); }; $('years').appendChild(btn); });
 }
 async function selectYear(y){
   SEL=y; renderYears(); $('ttitle').textContent='Transcript — year '+y;
@@ -179,14 +181,18 @@ async function forkWorldline(){
 async function pollStatus(){
   const s=await api('/api/status'); const el=$('status');
   if(s.busy){ el.className='status run'; el.textContent=`● ${s.phase}${s.branch?' · '+s.branch:''}`;
-    if(s.run && s.run!==RUN){ RUN=s.run; $('runsel').value=RUN; } if(s.branch) BR=s.branch;
-    if(!ES) startLive();
+    JOB_RUN=s.run; JOB_BR=s.branch;
+    if(FOLLOW){   // only auto-jump to the running job's live feed while following
+      if(s.run && s.run!==RUN){ RUN=s.run; $('runsel').value=RUN; } if(s.branch) BR=s.branch;
+      if(!ES) startLive();
+    }
   } else {
     el.className='status'; el.textContent = s.error? ('error: '+s.error) : 'idle';
     if(ES){ stopLive(); loadRuns(); loadTree(true); }
   }
 }
 function startLive(){
+  FOLLOW=true;   // entering live (via an action or while following) re-enables follow
   if(ES) return; $('ttitle').textContent='Live — streaming the run';
   $('events').innerHTML=''; SEL=null; renderYears();
   ES=new EventSource('/api/live?run='+encodeURIComponent(RUN));
@@ -195,7 +201,11 @@ function startLive(){
     $('center').scrollTop=$('center').scrollHeight; };
 }
 function stopLive(){ if(ES){ ES.close(); ES=null; } }
-function toggleLive(){ if(ES) stopLive(); }
+function goLive(){   // re-follow the running job's live feed (status bar is clickable)
+  if(!JOB_RUN) return;
+  RUN=JOB_RUN; $('runsel').value=RUN; if(JOB_BR) BR=JOB_BR;
+  startLive();
+}
 
 loadRuns();
 setInterval(pollStatus, 1500);
