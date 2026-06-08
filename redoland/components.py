@@ -13,7 +13,7 @@ from __future__ import annotations
 from concordia.components.agent import action_spec_ignored
 from concordia.typing import entity_component
 
-from ..core import BIG5, Mortality, approx_tokens
+from .core import BIG5, Mortality, approx_tokens
 
 _MORTALITY = Mortality()   # shared; states each agent's own age-death odds
 

@@ -19,7 +19,7 @@ import re
 
 from concordia.typing import entity as entity_lib
 
-from ..core import BIG5
+from .core import BIG5
 
 
 # --------------------------------------------------------------------------- #

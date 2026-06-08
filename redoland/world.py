@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from ..core import Agent, Params, RNG
+from .core import Agent, Params, RNG
 
 
 class World:

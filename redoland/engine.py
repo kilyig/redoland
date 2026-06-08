@@ -1,80 +1,37 @@
-"""The simulation engine — v2 force-and-conversation model (MVP_PLAN_V2.md).
+"""The Redoland engine, driving Concordia entities.
 
-Year = food into the pile → SCRAMBLE (a discrete-event willingness lottery over
-TAKE / GIVE / CONVO / ATTACK) → boundary (eat / HP-recover / age / SSA mortality
-/ compaction / commit). Conversations and fights are atomic multi-step chunks.
-There is no voting; distribution is free TAKE from the pile and raiding by force.
+Deterministic physics (food, Lanchester combat, satiation, HP, SSA mortality,
+crossover) computed in code here; every *decision* is delegated to an agent's
+Concordia mind via the `decide` helpers. Ported from the standalone engine — the
+only change is backend.X(world, a, rng) → decide.X(world, a). The engine's own
+randomness uses the seeded, checkpointed `world.rng` so physics replays
+deterministically (LLM choices are never deterministic).
 """
 
 from __future__ import annotations
 
 from typing import Optional
 
-from .core import (Agent, Mortality, Params, RNG, BIG5, approx_tokens, make_name)
-
-
-class World:
-    def __init__(self, params: Params, rng: RNG, branch: str = "main"):
-        self.params = params
-        self.rng = rng
-        self.branch = branch
-        self.year = 0
-        self.pile = 0
-        self.agents: dict[str, Agent] = {}
-        self.used_names: set = set()
-        self.next_eid = 0
-        self.next_aid = 0
-        self.year_events: list[dict] = []
-        self.event_sink = None   # optional callable(ev) for live streaming (set during a run)
-
-    def living(self) -> list[Agent]:
-        return [self.agents[i] for i in sorted(self.agents) if self.agents[i].alive]
-
-    def new_aid(self) -> str:
-        self.next_aid += 1
-        return f"a{self.next_aid:03d}"
-
-    def record(self, kind, who, text="", audience="public", payload=None, phase="scramble"):
-        self.next_eid += 1
-        eid = f"e{self.next_eid:06d}"
-        who_name = self.agents[who].name if who in self.agents else "the village"
-        ev = {"eid": eid, "year": self.year, "phase": phase, "kind": kind,
-              "speaker": who, "who": who_name, "audience": audience,
-              "text": text, "payload": payload or {}}
-        self.year_events.append(ev)
-        mem = {"eid": eid, "year": self.year, "kind": kind, "who": who_name, "text": text}
-        for a in self._witnesses(who, audience):
-            a.memory_raw.append(dict(mem))
-        if self.event_sink is not None:        # live streaming (turn-by-turn)
-            try:
-                self.event_sink(ev)
-            except Exception:
-                pass
-        return ev
-
-    def _witnesses(self, speaker, audience):
-        if audience == "public":
-            return self.living()
-        ids = set(audience) if isinstance(audience, list) else set()
-        if speaker in self.agents:
-            ids.add(speaker)
-        return [self.agents[i] for i in ids if i in self.agents]
+from .core import Agent, BIG5, Mortality, Params, RNG, approx_tokens, make_name
+from . import decide
+from .world import World
 
 
 class Engine:
-    def __init__(self, world: World, backend, mortality: Optional[Mortality] = None):
+    def __init__(self, world: World, mortality: Optional[Mortality] = None):
         self.w = world
-        self.backend = backend
         self.mortality = mortality or Mortality()
 
     # ===================================================================== #
     # Founding                                                              #
     # ===================================================================== #
     @classmethod
-    def found(cls, params: Params, backend, seed: int, mortality=None) -> "Engine":
+    def found(cls, params: Params, model_factory, seed: int, mortality=None,
+              randomize_choices: bool = True) -> "Engine":
         rng = RNG(seed=seed)
-        world = World(params, rng)
-        eng = cls(world, backend, mortality)
+        world = World(params, rng, model_factory=model_factory,
+                      randomize_choices=randomize_choices)
+        eng = cls(world, mortality)
         for _ in range(params.founders):
             sex = "male" if rng.chance(0.5) else "female"
             name = make_name(sex, rng, world.used_names)
@@ -89,6 +46,7 @@ class Engine:
                 strength=rng.randint(15, 85), hp=params.hp_max,
             )
             world.agents[ag.id] = ag
+            world.attach_mind(ag.id)
         return eng
 
     # ===================================================================== #
@@ -107,7 +65,7 @@ class Engine:
         w = self.w
         p = w.params
         n = len(w.living())
-        if p.food_base or p.food_floor_ratio:        # fountain + carrying-capacity floor
+        if p.food_base or p.food_floor_ratio:
             f = max(p.food_base, round(p.food_floor_ratio * n))
         else:
             f = round(n * p.ratio)
@@ -126,7 +84,7 @@ class Engine:
         steps = 0
         while steps < w.params.max_events_per_year:
             willing = [a for a in w.living()
-                       if a.id != last and self.backend.willing(w, a, w.rng)]
+                       if a.id != last and decide.willing(w, a)]
             if not willing:
                 break
             actor = w.rng.choice(willing)
@@ -136,51 +94,49 @@ class Engine:
 
     def _initiate(self, actor):
         w = self.w
-        action = self.backend.choose_action(w, actor, w.rng)
+        action = decide.choose_action(w, actor)
         kind = action.get("kind", "pass")
         if kind == "take":
-            amt = max(0, min(int(action.get("amount", 1)), w.pile))
+            amt = max(0, min(int(action.get("amount", 1) or 0), w.pile))
             if amt > 0:
                 actor.food += amt
                 w.pile -= amt
                 w.record("take", actor.id,
-                         f"{actor.name} takes {amt} from the pile "
-                         f"(pile now {w.pile}).", payload={"amount": amt})
+                         f"{actor.name} takes {amt} from the pile (pile now {w.pile}).",
+                         payload={"amount": amt})
         elif kind == "give":
             tgt = w.agents.get(action.get("target"))
-            amt = int(action.get("amount", 1))
+            amt = int(action.get("amount", 1) or 0)
             if tgt and tgt.alive and amt >= 1 and actor.food >= amt:
                 actor.food -= amt
                 tgt.food += amt
-                w.record("give", actor.id,
-                         f"{actor.name} gives {amt} food to {tgt.name}.",
+                w.record("give", actor.id, f"{actor.name} gives {amt} food to {tgt.name}.",
                          payload={"target": tgt.id, "amount": amt})
-        elif kind in ("child", "convo"):
+        elif kind == "child":
             self._convo_chunk(actor, action)
         elif kind == "talk":
             self._talk_chunk(actor, action)
         elif kind == "attack":
             tgt = w.agents.get(action.get("target"))
             if tgt and tgt.alive and tgt.id != actor.id:
-                self._fight_chunk(actor, tgt, int(action.get("demand", tgt.food)))
+                self._fight_chunk(actor, tgt, int(action.get("demand", tgt.food) or 0))
         else:
             w.record("pass", actor.id, "", audience=[actor.id])
 
-    # -- conversation chunk (v1: reproduction negotiation) ---------------- #
+    # -- reproduction proposal -------------------------------------------- #
     def _convo_chunk(self, initiator, action):
         w = self.w
         partner = w.agents.get(action.get("partner"))
         if not partner or not partner.alive or partner.id == initiator.id:
             return
         grp = [initiator.id, partner.id]
-        w.record("convo", initiator.id,
-                 f"{initiator.name} draws {partner.name} aside to talk.",
+        w.record("convo", initiator.id, f"{initiator.name} draws {partner.name} aside to talk.",
                  audience=grp, phase="convo")
-        share = max(0, min(int(action.get("my_share", 1)), w.params.child_cost))
+        share = max(0, min(int(action.get("my_share", 1) or 0), w.params.child_cost))
         w.record("propose", initiator.id,
-                 f"{initiator.name}: have a child with me — I'll put in {share} "
-                 f"of {w.params.child_cost} food.", audience=grp, phase="convo")
-        if self.backend.respond_child(w, partner, initiator, share, w.rng):
+                 f"{initiator.name}: have a child with me — I'll put in {share} of "
+                 f"{w.params.child_cost} food.", audience=grp, phase="convo")
+        if decide.respond_child(w, partner, initiator, share):
             if not self._birth(initiator, partner, share):
                 w.record("convo", partner.id,
                          f"{partner.name} agrees, but they cannot spare the food.",
@@ -189,100 +145,77 @@ class Engine:
             w.record("reject", partner.id, f"{partner.name} declines.",
                      audience=grp, phase="convo")
 
-    # -- free-form group talk chunk (private, open-floor dialogue) -------- #
+    # -- free-form group talk --------------------------------------------- #
     def _talk_chunk(self, initiator, action):
-        """A private GROUP conversation. The initiator pulls aside any subset of
-        people; everyone in the group hears every line (audience = the group), and
-        anyone in the group may chime in. There is NO turn limit: after the
-        initiator opens, the floor is open — each round, every member who still
-        wants to speak is polled, one of the willing is chosen at random to speak,
-        and the conversation ends only when no one (other than the last speaker)
-        wants to add more. convo_safety_cap is a runaway guard, not a turn limit.
-        Private: no one outside the group witnesses or remembers it."""
         w = self.w
-        ids = action.get("partners")
-        if not ids:                                   # tolerate single-partner form
-            ids = [action["partner"]] if action.get("partner") else []
+        ids = action.get("partners") or ([action["partner"]] if action.get("partner") else [])
         group, seen = [initiator], {initiator.id}
         for pid in ids:
             o = w.agents.get(pid)
             if o and o.alive and o.id not in seen:
                 group.append(o)
                 seen.add(o.id)
-        if len(group) < 2:                            # need at least one other person
+        if len(group) < 2:
             return
         gids = [g.id for g in group]
         others_names = ", ".join(g.name for g in group[1:])
-        w.record("convo", initiator.id,
-                 f"{initiator.name} gathers {others_names} to talk.",
+        w.record("convo", initiator.id, f"{initiator.name} gathers {others_names} to talk.",
                  audience=gids, phase="convo")
 
         def speak(agent):
             others = [g for g in group if g.id != agent.id]
-            out = self.backend.say(w, agent, others, self._tail(w, gids), w.rng)
-            text = (out.get("text", "") or "").strip()
+            text = (decide.say(w, agent, others, self._tail(w, gids)) or "").strip()
             if text:
                 w.record("say", agent.id, text, audience=gids, phase="convo")
             return text
 
-        # the initiator opens (they called the meeting, so they speak first)
         last = initiator.id if speak(initiator) else None
         guard = 0
         while guard < int(w.params.convo_safety_cap):
             guard += 1
             history = self._tail(w, gids)
             willing = [g for g in group if g.id != last
-                       and self.backend.want_to_speak(
-                           w, g, [o for o in group if o.id != g.id], history, w.rng)]
-            if not willing:                           # quiescent → conversation over
+                       and decide.want_to_speak(w, g, [o for o in group if o.id != g.id], history)]
+            if not willing:
                 break
             speaker = w.rng.choice(willing)
             speak(speaker)
             last = speaker.id
 
     def _tail(self, w, gids):
-        """Render this group's conversation so far (this year) as plain
-        'Name: line' text to feed back into the next speaker's prompt."""
         lines = [f"{e['who']}: {e['text']}" for e in w.year_events
                  if e.get("kind") == "say" and e.get("audience") == gids]
         return "\n".join(lines)
 
-    # -- fight chunk ------------------------------------------------------ #
+    # -- fight ------------------------------------------------------------ #
     def _fight_chunk(self, initiator, target, demand):
         w = self.w
         p = w.params
         attackers = {initiator.id}
         defenders = {target.id}
-        w.record("attack", "village",
-                 f"{initiator.name} moves to attack {target.name}.",
-                 payload={"initiator": initiator.id, "target": target.id},
-                 phase="fight")
-        w.record("under_attack", target.id,
-                 f"You are under attack by {initiator.name}.",
+        w.record("attack", "village", f"{initiator.name} moves to attack {target.name}.",
+                 payload={"initiator": initiator.id, "target": target.id}, phase="fight")
+        w.record("under_attack", target.id, f"You are under attack by {initiator.name}.",
                  audience=[target.id], phase="fight")
 
-        # MUSTER (escalating arms race)
         for _ in range(p.muster_passes_cap):
             added = self._recruit(attackers, defenders, "attack")
             added = self._recruit(defenders, attackers, "defend") or added
             if not added:
                 break
-        sA = self._roster_str(attackers)
-        sB = self._roster_str(defenders)
         w.record("muster", "village",
-                 f"Attackers [{self._names(attackers)}] (str {sA}) vs "
-                 f"defenders [{self._names(defenders)}] (str {sB}).",
+                 f"Attackers [{self._names(attackers)}] (str {self._roster_str(attackers)}) vs "
+                 f"defenders [{self._names(defenders)}] (str {self._roster_str(defenders)}).",
                  payload={"attackers": sorted(attackers), "defenders": sorted(defenders)},
                  phase="fight")
 
-        # OFF-RAMP
-        if self.backend.attacker_decision(w, initiator, attackers, defenders, w.rng) == "cancel":
+        if decide.attacker_decision(w, initiator, attackers, defenders) == "cancel":
             w.record("cancel", "village",
                      f"{initiator.name} thinks better of it and calls off the attack.",
                      phase="fight")
             return
-        if self.backend.defender_decision(w, target, attackers, defenders, w.rng) == "submit":
-            if self.backend.attacker_on_submit(w, initiator, attackers, defenders, w.rng) == "accept":
+        if decide.defender_decision(w, target, attackers, defenders) == "submit":
+            if decide.attacker_on_submit(w, initiator, attackers, defenders) == "accept":
                 amt = min(demand, target.food)
                 target.food -= amt
                 initiator.food += amt
@@ -291,10 +224,8 @@ class Engine:
                          f"without a fight.", payload={"amount": amt}, phase="fight")
                 return
             w.record("presson", "village",
-                     f"{target.name} submits, but {initiator.name} attacks anyway.",
-                     phase="fight")
+                     f"{target.name} submits, but {initiator.name} attacks anyway.", phase="fight")
 
-        # BLOW ROUNDS
         fa, fd = set(attackers), set(defenders)
         for _ in range(p.blow_rounds_cap):
             fa = {i for i in fa if w.agents[i].alive}
@@ -316,20 +247,17 @@ class Engine:
                 if w.agents[i].hp <= 0:
                     self._die(w.agents[i], "combat")
                     fa.discard(i); fd.discard(i)
-            # morale
             for side, enemy in ((fa, fd), (fd, fa)):
                 for i in list(side):
                     a = w.agents[i]
                     if not a.alive:
                         side.discard(i); continue
-                    d = self.backend.morale(w, a, side, enemy, w.rng)
+                    d = decide.morale(w, a, side, enemy)
                     if d in ("flee", "yield"):
                         side.discard(i)
                         w.record(d, "village",
-                                 f"{a.name} {'flees' if d=='flee' else 'yields'}.",
-                                 phase="fight")
+                                 f"{a.name} {'flees' if d == 'flee' else 'yields'}.", phase="fight")
 
-        # OUTCOME
         if fa and not fd:
             amt = min(demand, max(0, target.food))
             if target.id in w.agents:
@@ -341,22 +269,20 @@ class Engine:
                      payload={"amount": amt}, phase="fight")
         else:
             w.record("outcome", "village",
-                     f"The defenders hold; {initiator.name}'s raid fails.",
-                     phase="fight")
+                     f"The defenders hold; {initiator.name}'s raid fails.", phase="fight")
 
     def _recruit(self, side, opposing, label):
         w = self.w
         added = False
         for m in list(side):
-            for inv in self.backend.recruit_invites(w, w.agents[m], side, opposing, label, w.rng):
+            for inv in decide.recruit_invites(w, w.agents[m], side, opposing, label):
                 a = w.agents.get(inv)
                 if not a or not a.alive or inv in side or inv in opposing:
                     continue
-                if self.backend.accept_join(w, a, side, opposing, label, w.rng):
+                if decide.accept_join(w, a, side, opposing, label):
                     side.add(inv)
                     added = True
-                    w.record("join", "village",
-                             f"{a.name} joins the {label}ers.", phase="fight")
+                    w.record("join", "village", f"{a.name} joins the {label}ers.", phase="fight")
         return added
 
     def _roster_str(self, ids):
@@ -365,7 +291,7 @@ class Engine:
     def _names(self, ids):
         return ", ".join(self.w.agents[i].name for i in ids if i in self.w.agents)
 
-    # -- reproduction (called from a convo) ------------------------------- #
+    # -- reproduction ----------------------------------------------------- #
     def _birth(self, proposer, partner, proposer_share):
         w = self.w
         partner_share = w.params.child_cost - proposer_share
@@ -388,12 +314,13 @@ class Engine:
                 sib.siblings.append(child.id)
         mother.children.append(child.id)
         father.children.append(child.id)
-        child.mother_note = self.backend.note(w, mother, child, w.rng)
-        child.father_note = self.backend.note(w, father, child, w.rng)
+        w.agents[child.id] = child
+        w.attach_mind(child.id)                       # mid-year birth: register the new mind
+        child.mother_note = decide.note(w, mother, child)
+        child.father_note = decide.note(w, father, child)
         mother.bore_this_year = True
         mother.repro_done_year = True
         father.repro_done_year = True
-        w.agents[child.id] = child
         big5 = " ".join(f"{t[0].upper()}{child.trait(t)}" for t in BIG5)
         w.record("birth", "village",
                  f"{child.name} ({child.sex}, age {child.age}; str {child.strength}, "
@@ -433,9 +360,8 @@ class Engine:
         w = self.w
         p = w.params
         agents = w.living()
-        # eat
         for a in agents:
-            eat = max(0, min(a.food, int(self.backend.eat_choice(w, a, w.rng))))
+            eat = max(0, min(a.food, int(decide.eat_choice(w, a))))
             new_h = a.health - 1 + eat
             a.food -= eat
             w.record("eat", a.id, f"eats {eat} food", audience=[a.id], phase="eat")
@@ -444,15 +370,12 @@ class Engine:
                 self._die(a, "starvation")
             else:
                 a.health = min(p.health_max, new_h)
-        # HP recovery (gated on satiation)
         for a in agents:
             if a.alive and a.health >= p.hp_recovery_min_satiation and a.hp < p.hp_max:
                 a.hp = min(p.hp_max, a.hp + p.hp_recovery)
-        # age all survivors (incl. newborns)
         for a in agents:
             if a.alive:
                 a.age += 1
-        # SSA natural mortality
         for a in agents:
             if a.alive and w.rng.chance(self.mortality.q(a.age, a.sex)):
                 self._die(a, "natural")
@@ -486,7 +409,6 @@ class Engine:
                 fold_n = len(a.memory_raw) // 2
                 fold = a.memory_raw[:fold_n]
                 a.memory_raw = a.memory_raw[fold_n:]
-                a.memory_summary = self.backend.compact(w, a, fold, w.rng)
-                w.record("compaction", a.id,
-                         f"({a.name} consolidates older memories)",
+                a.memory_summary = decide.compact(w, a, fold)
+                w.record("compaction", a.id, f"({a.name} consolidates older memories)",
                          audience=[a.id], phase="boundary")

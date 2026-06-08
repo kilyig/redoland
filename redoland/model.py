@@ -36,8 +36,8 @@ _EMBED_DIM = 16
 def dummy_embedder(text: str) -> np.ndarray:
     """Deterministic unit-norm vector from a hash. Never semantically meaningful —
     Redoland does not use associative retrieval; this only satisfies the API."""
-    h = hashlib.sha256(text.encode("utf-8")).digest()
-    v = np.frombuffer(h[:_EMBED_DIM * 4], dtype=np.uint32).astype(np.float64)
+    h = hashlib.sha256(text.encode("utf-8")).digest()      # 32 bytes
+    v = np.frombuffer(h, dtype=np.uint8)[:_EMBED_DIM].astype(np.float64)
     v = v / (np.linalg.norm(v) or 1.0)
     return v
 
