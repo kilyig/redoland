@@ -25,6 +25,7 @@ class World:
         self.next_eid = 0
         self.next_aid = 0
         self.year_events: list[dict] = []
+        self.event_sink = None   # optional callable(ev) for live streaming (set during a run)
 
     def living(self) -> list[Agent]:
         return [self.agents[i] for i in sorted(self.agents) if self.agents[i].alive]
@@ -44,6 +45,11 @@ class World:
         mem = {"eid": eid, "year": self.year, "kind": kind, "who": who_name, "text": text}
         for a in self._witnesses(who, audience):
             a.memory_raw.append(dict(mem))
+        if self.event_sink is not None:        # live streaming (turn-by-turn)
+            try:
+                self.event_sink(ev)
+            except Exception:
+                pass
         return ev
 
     def _witnesses(self, speaker, audience):

@@ -53,6 +53,9 @@ class GitStore:
             self._git("config", "user.email", "engine@redoland.local")
             self._git("config", "user.name", "Redoland Engine")
             self._git("config", "commit.gpgsign", "false")
+            # the live streaming feed is transient — never commit it
+            with open(os.path.join(self.path, ".gitignore"), "w") as fh:
+                fh.write("live.jsonl\n")
 
     def current_branch(self) -> str:
         return self._git("rev-parse", "--abbrev-ref", "HEAD")
