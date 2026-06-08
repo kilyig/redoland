@@ -144,10 +144,13 @@ class FakeBackend:
                 return {"kind": "give", "target": n.id, "amount": 1}
         return {"kind": "pass"}
 
-    def say(self, world, speaker, listener, history, rng):
-        # FakeBackend never selects 'talk' in choose_action, so this is only an
-        # interface stub; it ends the conversation immediately if ever called.
-        return {"text": "", "done": True}
+    def say(self, world, speaker, others, history, rng):
+        # FakeBackend never selects 'talk' in choose_action, so these are only
+        # interface stubs: it never speaks and never wants the floor.
+        return {"text": ""}
+
+    def want_to_speak(self, world, a, others, history, rng):
+        return False
 
     # -- reproduction ----------------------------------------------------- #
     def respond_child(self, world, partner, proposer, my_share, rng):
@@ -412,33 +415,49 @@ Speak and act in character; be brief."""
             "kind": {"type": "string",
                      "enum": ["take", "give", "talk", "child", "attack", "pass"]},
             "amount": {"type": "integer"}, "target": {"type": "string"},
-            "partner": {"type": "string"}, "my_share": {"type": "integer"},
-            "demand": {"type": "integer"}},
+            "partner": {"type": "string"},
+            "partners": {"type": "array", "items": {"type": "string"}},
+            "my_share": {"type": "integer"}, "demand": {"type": "integer"}},
             "required": ["kind"], "additionalProperties": False}
         return self._decide(world, a,
             "Choose ONE action now: take (N from the pile), give (N of your food to a "
-            "person id), talk (start a private free-form conversation with another person "
-            "— set partner to their id; use this to bond, plan, warn, court, scheme, or "
-            "just talk), child (offer to have a child with an opposite-sex, non-close-kin "
-            "person id — set partner to their id and my_share to how much of the 3-food "
-            "cost you'll pay), attack (a person id, demanding N food), or pass. Use ids "
-            "exactly as shown.", s)
+            "person id), talk (pull ANY subset of people aside for a private group "
+            "conversation — set partners to a list of their ids; everyone you include "
+            "hears everyone, anyone may chime in, and it runs until no one has more to "
+            "say; use it to bond, plan, warn, court, scheme, or just talk), child (offer "
+            "to have a child with an opposite-sex, non-close-kin person id — set partner "
+            "to their id and my_share to how much of the 3-food cost you'll pay), attack "
+            "(a person id, demanding N food), or pass. Use ids exactly as shown.", s)
 
-    def say(self, world, speaker, listener, history, rng):
-        """One free-form line in a private conversation. Returns {text, done}."""
-        s = {"type": "object", "properties": {
-            "text": {"type": "string"}, "done": {"type": "boolean"}},
-            "required": ["text"], "additionalProperties": False}
-        convo = history.strip() or "(no one has spoken yet — you open.)"
+    def _convo_partners(self, world, a, others):
+        them = ", ".join(o.name for o in others) or "no one"
+        return (f"You are in a PRIVATE group conversation with {them} — only the people "
+                f"in this conversation hear it or remember it; no one outside does.")
+
+    def say(self, world, speaker, others, history, rng):
+        """One free-form line in a private group conversation. Returns {text}."""
+        s = {"type": "object", "properties": {"text": {"type": "string"}},
+             "required": ["text"], "additionalProperties": False}
+        convo = (history or "").strip() or "(no one has spoken yet — you open.)"
         out = self._decide(world, speaker,
-            f"You pulled {listener.name} aside for a PRIVATE talk — no one else hears "
-            f"this, and it is not witnessed or remembered by anyone but the two of you. "
+            f"{self._convo_partners(world, speaker, others)}\n"
             f"Conversation so far:\n{convo}\n\n"
-            f"Say the next thing YOU say to {listener.name}, in your own voice — anything: "
-            f"small talk, memories, plans, warnings, courtship, scheming, asking a favor. "
-            f"1-3 sentences. Set done=true only if the conversation has reached a natural "
-            f"end after your line.", s)
-        return {"text": out.get("text", ""), "done": bool(out.get("done"))}
+            f"Say the next thing YOU say to the group, in your own voice — anything: "
+            f"small talk, memories, plans, warnings, courtship, scheming, asking a favor, "
+            f"answering what someone just said. 1-3 sentences.", s)
+        return {"text": out.get("text", "")}
+
+    def want_to_speak(self, world, a, others, history, rng):
+        """Does this member want to say (more) in the open-floor conversation?"""
+        s = {"type": "object", "properties": {"speak": {"type": "boolean"}},
+             "required": ["speak"], "additionalProperties": False}
+        convo = (history or "").strip() or "(nothing said yet)"
+        return bool(self._decide(world, a,
+            f"{self._convo_partners(world, a, others)}\n"
+            f"Conversation so far:\n{convo}\n\n"
+            f"Do you want to speak now — say something or respond? Answer speak=true to "
+            f"take the floor, or speak=false if you have nothing to add and are content "
+            f"to let the conversation move on or end.", s, cheap=True).get("speak"))
 
     def respond_child(self, world, partner, proposer, my_share, rng):
         s = {"type": "object", "properties": {"accept": {"type": "boolean"}},

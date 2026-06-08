@@ -88,40 +88,62 @@ def test_branching_diverges():
     shutil.rmtree(path, ignore_errors=True)
 
 
-def test_talk_chunk_dialogue():
-    """The free-form talk action records alternating private 'say' lines and ends
-    when a speaker signals done — no network, driven by a stub backend."""
+def test_talk_chunk_group_dialogue():
+    """The talk action runs an open-floor GROUP conversation: the initiator opens,
+    anyone in the group may chime in, every line is heard by the whole group, and
+    it ends when no one wants the floor — no turn limit. No network; stub backend."""
     from redoland.engine import World, Engine
     from redoland.core import Agent, RNG
 
-    class TalkStub(FakeBackend):
-        def __init__(self):
-            self.n = 0
-        def say(self, world, speaker, listener, history, rng):
-            self.n += 1
-            return {"text": f"line{self.n} ({speaker.name}->{listener.name})",
-                    "done": self.n >= 3}          # 3 lines then stop
+    class GroupStub(FakeBackend):
+        def __init__(self, budget):
+            self.said = 0
+            self.budget = budget                     # total utterances allowed
+        def want_to_speak(self, world, a, others, history, rng):
+            return self.said < self.budget           # everyone keen until budget spent
+        def say(self, world, speaker, others, history, rng):
+            self.said += 1
+            return {"text": f"u{self.said} by {speaker.name}"}
 
-    w = World(Params(convo_turns_cap=6), RNG(seed=1))
     def mk(aid, name, sex):
         return Agent(id=aid, name=name, sex=sex, traits={t: 50 for t in
                      ["openness", "conscientiousness", "extraversion",
                       "agreeableness", "neuroticism"]},
                      intelligence_tokens=1024, memory_tokens=4000, age=30,
                      health=3, food=2)
-    w.agents = {"a001": mk("a001", "Ana", "female"), "a002": mk("a002", "Bo", "male")}
-    eng = Engine(w, TalkStub())
+    w = World(Params(convo_safety_cap=200), RNG(seed=3))
+    w.agents = {"a001": mk("a001", "Ana", "female"),
+                "a002": mk("a002", "Bo", "male"),
+                "a003": mk("a003", "Cy", "male"),
+                "a004": mk("a004", "Di", "female")}   # a004 NOT pulled into the convo
+    eng = Engine(w, GroupStub(budget=5))
     w.year_events = []
-    eng._talk_chunk(w.agents["a001"], {"partner": "a002"})
+    # initiator a001 pulls aside a SUBSET (a002, a003) — a004 is excluded
+    eng._talk_chunk(w.agents["a001"], {"partners": ["a002", "a003"]})
 
     says = [e for e in w.year_events if e["kind"] == "say"]
-    check(len(says) == 3, f"3 say-lines recorded (got {len(says)})")
-    check([e["speaker"] for e in says] == ["a001", "a002", "a001"],
-          "speakers alternate, initiator first")
-    check(all(set(e["audience"]) == {"a001", "a002"} for e in says),
-          "every line is private to the two participants")
-    # private => only the two carry it in memory, nobody else exists here anyway
-    check(any(e["kind"] == "convo" for e in w.year_events), "opener recorded")
+    gid = ["a001", "a002", "a003"]
+    check(len(says) == 5, f"runs until willingness budget spent (got {len(says)})")
+    check(says[0]["speaker"] == "a001", "initiator opens")
+    check(all(e["audience"] == gid for e in says),
+          "every line heard by the whole group (and only the group)")
+    check("a004" not in {e["speaker"] for e in says},
+          "a non-member never speaks")
+    spoke = {e["speaker"] for e in says}
+    check("a002" in spoke or "a003" in spoke, "members other than initiator chime in")
+    check(not any(s == t for s, t in zip([e["speaker"] for e in says],
+                                         [e["speaker"] for e in says][1:])),
+          "no one speaks twice in a row (last speaker yields the floor)")
+
+    # ends on quiescence with NO turn limit: nobody willing -> stops immediately
+    w2 = World(Params(convo_safety_cap=200), RNG(seed=3))
+    w2.agents = {k: mk(k, n, s) for k, n, s in
+                 [("a001", "Ana", "female"), ("a002", "Bo", "male")]}
+    eng2 = Engine(w2, GroupStub(budget=1))           # only the opener speaks
+    w2.year_events = []
+    eng2._talk_chunk(w2.agents["a001"], {"partners": ["a002"]})
+    check(len([e for e in w2.year_events if e["kind"] == "say"]) == 1,
+          "no-limit loop ends immediately when no one wants the floor")
 
 
 def test_cli_backend_parsing():
@@ -154,7 +176,7 @@ if __name__ == "__main__":
     for fn in [test_mortality_monotonic, test_rng_serialization,
                test_engine_invariants, test_combat_and_repro_occur,
                test_determinism, test_branching_diverges,
-               test_talk_chunk_dialogue, test_cli_backend_parsing]:
+               test_talk_chunk_group_dialogue, test_cli_backend_parsing]:
         print(fn.__name__)
         fn()
     print("\nALL SMOKE TESTS PASSED")

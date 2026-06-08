@@ -189,33 +189,63 @@ class Engine:
             w.record("reject", partner.id, f"{partner.name} declines.",
                      audience=grp, phase="convo")
 
-    # -- free-form talk chunk (private, model-authored dialogue) ---------- #
+    # -- free-form group talk chunk (private, open-floor dialogue) -------- #
     def _talk_chunk(self, initiator, action):
-        """A private conversation: the two parties trade free-form, model-written
-        lines (alternating, up to convo_turns_cap turns) until someone ends it.
-        Audience is just the two of them — no one else witnesses or remembers it,
-        which is the whole point of 'only private conversations are unseen'."""
+        """A private GROUP conversation. The initiator pulls aside any subset of
+        people; everyone in the group hears every line (audience = the group), and
+        anyone in the group may chime in. There is NO turn limit: after the
+        initiator opens, the floor is open — each round, every member who still
+        wants to speak is polled, one of the willing is chosen at random to speak,
+        and the conversation ends only when no one (other than the last speaker)
+        wants to add more. convo_safety_cap is a runaway guard, not a turn limit.
+        Private: no one outside the group witnesses or remembers it."""
         w = self.w
-        partner = w.agents.get(action.get("partner"))
-        if not partner or not partner.alive or partner.id == initiator.id:
+        ids = action.get("partners")
+        if not ids:                                   # tolerate single-partner form
+            ids = [action["partner"]] if action.get("partner") else []
+        group, seen = [initiator], {initiator.id}
+        for pid in ids:
+            o = w.agents.get(pid)
+            if o and o.alive and o.id not in seen:
+                group.append(o)
+                seen.add(o.id)
+        if len(group) < 2:                            # need at least one other person
             return
-        grp = [initiator.id, partner.id]
+        gids = [g.id for g in group]
+        others_names = ", ".join(g.name for g in group[1:])
         w.record("convo", initiator.id,
-                 f"{initiator.name} draws {partner.name} aside to talk.",
-                 audience=grp, phase="convo")
-        history = ""
-        speaker, listener = initiator, partner
-        for _ in range(max(1, int(w.params.convo_turns_cap))):
-            out = self.backend.say(w, speaker, listener, history, w.rng)
+                 f"{initiator.name} gathers {others_names} to talk.",
+                 audience=gids, phase="convo")
+
+        def speak(agent):
+            others = [g for g in group if g.id != agent.id]
+            out = self.backend.say(w, agent, others, self._tail(w, gids), w.rng)
             text = (out.get("text", "") or "").strip()
-            if not text:
+            if text:
+                w.record("say", agent.id, text, audience=gids, phase="convo")
+            return text
+
+        # the initiator opens (they called the meeting, so they speak first)
+        last = initiator.id if speak(initiator) else None
+        guard = 0
+        while guard < int(w.params.convo_safety_cap):
+            guard += 1
+            history = self._tail(w, gids)
+            willing = [g for g in group if g.id != last
+                       and self.backend.want_to_speak(
+                           w, g, [o for o in group if o.id != g.id], history, w.rng)]
+            if not willing:                           # quiescent → conversation over
                 break
-            w.record("say", speaker.id, text, audience=grp,
-                     payload={"to": listener.id}, phase="convo")
-            history += f"{speaker.name}: {text}\n"
-            if out.get("done"):
-                break
-            speaker, listener = listener, speaker
+            speaker = w.rng.choice(willing)
+            speak(speaker)
+            last = speaker.id
+
+    def _tail(self, w, gids):
+        """Render this group's conversation so far (this year) as plain
+        'Name: line' text to feed back into the next speaker's prompt."""
+        lines = [f"{e['who']}: {e['text']}" for e in w.year_events
+                 if e.get("kind") == "say" and e.get("audience") == gids]
+        return "\n".join(lines)
 
     # -- fight chunk ------------------------------------------------------ #
     def _fight_chunk(self, initiator, target, demand):
