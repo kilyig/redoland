@@ -86,16 +86,20 @@ class Engine:
         last = None
         steps = 0
         while steps < w.params.max_events_per_year:
-            # One-step cooldown: the agent who just acted sits out the next poll, so a
-            # single agent can't monopolize the scramble WHILE others want to act.
-            others = self._poll_willing([a for a in w.living() if a.id != last])
-            if others:
-                actor = w.rng.choice(others)
-            else:
-                # No one ELSE wants to act. Don't end the year on the cooldown alone —
-                # let the just-acted agent continue if they still want to (e.g. a sole
-                # survivor, or the last willing person, securing more food). The year is
-                # quiescent only when no one at all wants to act.
+            # Draw agents ONE AT A TIME (respecting the one-step cooldown) and cheap-
+            # check willingness; the FIRST agent who wants to act does so. We never poll
+            # everyone — we stop at the first yes. The draw order is a uniform random
+            # shuffle, so the actor is a uniform pick among the willing (identical in
+            # effect to the old poll-all lottery), but with far fewer willingness calls
+            # in the common case where most agents want to act.
+            pool = [a for a in w.living() if a.id != last]
+            w.rng.shuffle(pool)
+            actor = next((a for a in pool if decide.willing(w, a)), None)
+            if actor is None:
+                # No one ELSE wants to act. Relax the cooldown rather than ending the
+                # year on it alone: let the just-acted agent continue if they still want
+                # to (a sole survivor, or the last willing person, securing more food).
+                # The year is quiescent only when truly no one wants to act.
                 la = w.agents.get(last) if last else None
                 if la and la.alive and decide.willing(w, la):
                     actor = la
@@ -104,22 +108,6 @@ class Engine:
             self._initiate(actor)
             last = actor.id
             steps += 1
-
-    def _poll_willing(self, candidates):
-        """Ask each candidate whether it wants to act, concurrently. The polls are
-        independent and read-only (they never mutate the world), so running them in
-        parallel is a pure speedup. Order is preserved, so the resulting `willing`
-        list — and thus w.rng.choice over it — stays deterministic regardless of
-        which `claude -p` call returns first."""
-        if not candidates:
-            return []
-        workers = max(1, min(len(candidates), int(getattr(self.w.params, "poll_workers", 8))))
-        if workers == 1:
-            return [a for a in candidates if decide.willing(self.w, a)]
-        import concurrent.futures as _cf
-        with _cf.ThreadPoolExecutor(max_workers=workers) as ex:
-            flags = list(ex.map(lambda a: decide.willing(self.w, a), candidates))
-        return [a for a, f in zip(candidates, flags) if f]
 
     def _initiate(self, actor):
         w = self.w
