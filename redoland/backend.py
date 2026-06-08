@@ -290,7 +290,7 @@ HP {int(a.hp)}/{p.hp_max}. You hold {a.food} food. Satiation {a.health}/{p.healt
 {a.father_note or "(nothing)"}
 
 == HOW THE WORLD WORKS ==
-Each year, food appears in a central pile. Anyone may TAKE any amount of it (greedy hoards make you a target for raids). You can GIVE your own food to anyone freely. You can ATTACK another person to seize their food: they may submit or fight, and allies on both sides can be mustered. You see everyone's EXACT food, HP, strength, and age at all times.
+Each year, food appears in a central pile. Anyone may TAKE any amount of it (greedy hoards make you a target for raids). You can GIVE your own food to anyone freely. You can ATTACK another person to seize their food: they may submit or fight, and allies on both sides can be mustered. You see everyone's EXACT food, HP, strength, and age at all times. Everything physical is public: when you take from the pile, give, or attack, the whole village witnesses it and remembers. Only private conversations are unseen.
 
 == SURVIVAL RULES (exact — reason from these yourself) ==
 - SATIATION (hunger), now {a.health}/{p.health_max}: you lose 1 each year. At year's end you may eat your stored food — each food eaten restores 1 satiation, up to {p.health_max}. If satiation reaches 0 you STARVE AND DIE. (So if your satiation is 1 and you eat nothing this year, you die; you must secure and eat at least 1 food.)
