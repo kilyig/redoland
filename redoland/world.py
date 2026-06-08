@@ -33,6 +33,7 @@ class World:
         self.pile = 0
         self.agents: dict[str, Agent] = {}        # bodies (serializable, engine-mutated)
         self.minds: dict[str, object] = {}        # Concordia EntityAgents (decision-makers)
+        self.models: dict[str, object] = {}       # per-agent LanguageModel (deliberation toggles)
         self.used_names: set = set()
         self.next_eid = 0
         self.next_aid = 0
