@@ -137,8 +137,11 @@ class ClaudeCLIModel(language_model.LanguageModel):
         q = (prompt.rstrip() + "\n\nReply with ONLY your choice, exactly as written "
              "(no explanation): " + " | ".join(opts))
         order = sorted(range(len(opts)), key=lambda j: -len(opts[j]))   # longest first
+        # Gating / enum picks (willing?, accept?, press-or-flee, …) are snap judgments
+        # — they run with NO extended thinking. The agent's intelligence budget is
+        # spent on the substantive generative decisions (sample_text: what to do / say).
         for attempt in range(3):
-            raw = self._run(q, thinking=0 if attempt else self._thinking).strip().lower()
+            raw = self._run(q, thinking=0).strip().lower()
             for i in order:
                 o = opts[i].lower()
                 if len(o) == 1:
