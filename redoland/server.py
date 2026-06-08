@@ -16,16 +16,16 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-from .core import Params
 from .metrics import snapshot_metrics, distributions
 from .sim import Simulation
 from .store import safe_branch
 
 _STATIC = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
 
-# single global background job (one run/fork/continue at a time)
+# single global background runner (start/pause a branch). All branch CREATION
+# (fork / inject / new world) is done by the AI via the CLI; the UI only runs/pauses.
 JOB = {"busy": False, "run": None, "branch": None, "phase": "idle", "error": None,
-       "target_years": 0}
+       "pause": False}
 _JOB_LOCK = threading.Lock()
 
 
@@ -76,53 +76,34 @@ class Manager:
                 "dist": distributions(w) if w else {},
                 "years": years}
 
-    # -- background jobs ------------------------------------------------- #
-    def start_job(self, kind, **kw):
+    # -- start / pause a branch ------------------------------------------ #
+    def start(self, run, branch="main"):
+        """Run the given branch forward (one commit per action) until paused or
+        extinct. Branch creation/intervention is the AI's job; this just runs."""
         with _JOB_LOCK:
             if JOB["busy"]:
-                return {"ok": False, "error": "A run is already in progress."}
-            JOB.update(busy=True, error=None, phase="starting",
-                       run=kw.get("run") or kw.get("name"), branch=None,
-                       target_years=int(kw.get("years", 0) or 0))
-        threading.Thread(target=self._run_job, args=(kind, kw), daemon=True).start()
+                return {"ok": False, "error": "A branch is already running. Pause it first."}
+            JOB.update(busy=True, paused=False, error=None, phase="running",
+                       run=run, branch=branch, pause=False)
+        threading.Thread(target=self._run, args=(run, branch), daemon=True).start()
         return {"ok": True}
 
-    def _run_job(self, kind, kw):
+    def pause(self):
+        JOB["pause"] = True            # the run loop stops at the next step boundary
+        return {"ok": True}
+
+    def _run(self, run, branch):
         try:
-            mf = self.model_factory()
-            if kind == "new":
-                name = safe_branch(kw["name"])
-                params = Params(founders=int(kw.get("founders", 6)),
-                                ratio=float(kw.get("ratio", Params().ratio)))
-                JOB.update(run=name, branch="main", phase="founding")
-                sim = Simulation.create(self.path(name), params, int(kw.get("seed", 1)), mf)
-                JOB.update(phase="running")
-                if int(kw.get("years", 0) or 0):
-                    sim.run(int(kw["years"]), log=self._progress)
-            elif kind == "continue":
-                run, branch = kw["run"], kw["branch"]
-                JOB.update(run=run, branch=branch, phase="running")
-                sim = Simulation.open(self.path(run), mf)
-                sim.store.checkout_branch(branch)
-                sim.run(int(kw["years"]), log=self._progress)
-            elif kind == "fork":
-                run = kw["run"]
-                sim = Simulation.open(self.path(run), mf)
-                nb = sim.fork(kw["parent"], int(kw["year"]), kw.get("name"))
-                JOB.update(run=run, branch=nb, phase="running")
-                if int(kw.get("years", 0) or 0):
-                    sim.replay(nb, int(kw["years"]), log=self._progress)
+            sim = Simulation.open(self.path(run), self.model_factory())
+            sim.store.checkout_branch(branch)
+            sim.run(years=None, log=self._progress, should_stop=lambda: JOB["pause"])
         except Exception as e:  # noqa
             JOB["error"] = str(e)
         finally:
-            JOB.update(busy=False, phase="idle")
+            JOB.update(busy=False, phase="idle", pause=False)
 
     def _progress(self, year, world):
         JOB["branch"] = world.branch
-
-    def inject(self, run, branch, ratio=None, pile=None, narrate=None):
-        sim = Simulation.open(self.path(run), model_factory=None)
-        return sim.inject(branch, ratio=ratio, pile=pile, narrate=narrate)
 
 
 def serve(runs_dir="runs", port=8000):
@@ -218,16 +199,10 @@ def serve(runs_dir="runs", port=8000):
             u = urlparse(self.path)
             try:
                 body = self._read_json()
-                if u.path == "/api/new":
-                    return self._send(mgr.start_job("new", **body))
-                if u.path == "/api/continue":
-                    return self._send(mgr.start_job("continue", **body))
-                if u.path == "/api/fork":
-                    return self._send(mgr.start_job("fork", **body))
-                if u.path == "/api/inject":
-                    ch = mgr.inject(body["run"], body["branch"], ratio=body.get("ratio"),
-                                    pile=body.get("pile"), narrate=body.get("narrate"))
-                    return self._send({"ok": True, "changes": ch})
+                if u.path == "/api/start":
+                    return self._send(mgr.start(body["run"], body.get("branch", "main")))
+                if u.path == "/api/pause":
+                    return self._send(mgr.pause())
                 return self._send({"error": "not found"}, 404)
             except Exception as e:  # noqa
                 return self._send({"error": str(e)}, 500)

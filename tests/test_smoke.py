@@ -223,6 +223,33 @@ def test_worldline_fork_inject_replay():
     shutil.rmtree(path, ignore_errors=True)
 
 
+def test_fork_at_action_and_inject():
+    """Per-action commits: fork from a mid-year action, inject a public event
+    (kill + empty the pile), resume from that exact step, and diverge from main."""
+    path = "/tmp/redoland_cc_forkstep"
+    shutil.rmtree(path, ignore_errors=True)
+    stub = survival_stub()
+    sim = Simulation.create(path, Params(founders=5, ratio=1.6, start_food=0), seed=7,
+                            model_factory=lambda t: stub, randomize_choices=False)
+    sim.run(1)
+    tl = sim.store.timeline("main", n=20)
+    check(sum(1 for r in tl if " action:" in r["desc"]) >= 2,
+          "each agent action is its own commit")
+    mid = next(r for r in tl if "action:" in r["desc"])      # a mid-year action
+    sim.fork_at(mid["commit"], "quake")
+    victim = sim.store.load_world().living()[0].id
+    res = sim.inject("quake", changes={"kill": [victim], "pile": {"set": 0}},
+                     narrative="An earthquake strikes.")
+    check(any("dies" in e for e in res["effects"]), "inject kill takes effect")
+    check("earthquake" in res["text"].lower(), "narrative recorded with effects")
+    sim.replay("quake", 1)   # resume the rest of year 1 from the fork point
+    main_pop = snapshot_metrics(sim.store.load_world(sim.store.tag("main", 1)))["population"]
+    quake_w = sim.store.load_world()
+    check(not quake_w.agents[victim].alive, "injected death persists on the fork")
+    check(any(b == "quake" for b in sim.store.list_branches()), "fork branch exists")
+    shutil.rmtree(path, ignore_errors=True)
+
+
 def test_distributions():
     stub = survival_stub()
     eng = Engine.found(Params(founders=5, ratio=1.6), model_factory=lambda t: stub,
@@ -238,7 +265,8 @@ if __name__ == "__main__":
     for fn in [test_model_parsing, test_engine_invariants, test_sole_actor_can_continue,
                test_determinism,
                test_combat_resolves, test_birth_crossover, test_max_maternal_age, test_group_talk,
-               test_worldline_fork_inject_replay, test_distributions]:
+               test_worldline_fork_inject_replay, test_fork_at_action_and_inject,
+               test_distributions]:
         print(fn.__name__)
         fn()
     print("\nALL CC TESTS PASSED")

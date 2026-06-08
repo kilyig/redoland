@@ -41,6 +41,9 @@ class World:
         self.event_sink = None                    # optional callable(ev) for live streaming
         # builds a per-agent LanguageModel given the agent's intelligence dial
         self.model_factory = model_factory
+        # resumable run cursor: lets the simulation be checkpointed/forked after ANY
+        # single action and resumed exactly (phase of the year + scramble position).
+        self.cursor = {"phase": "year_start", "last": None, "steps": 0}
 
     # -- population ------------------------------------------------------- #
     def living(self) -> list[Agent]:

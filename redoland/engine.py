@@ -53,13 +53,45 @@ class Engine:
     # One year                                                              #
     # ===================================================================== #
     def run_year(self):
-        self.w.year += 1
-        self.w.year_events = []
-        self._setup()
-        self._scramble()
-        self._year_end()
-        self._compaction()
-        return self.w.year_events
+        """Run one full year by stepping to the next year boundary (convenience for
+        tests / offline use). Assumes the cursor is at a year boundary."""
+        while True:
+            if self.step() == "year_end":
+                return self.w.year_events
+
+    # -- one atomic, committable step ------------------------------------- #
+    def step(self):
+        """Advance the simulation by ONE atomic step and return a short label:
+        'setup' (a year opens, food appears), 'action' (one agent took their move),
+        'quiescent' (no one else wants to act), or 'year_end' (eat / age / mortality
+        resolved). The world's run cursor makes this resumable: a fork taken after
+        any single step continues from exactly that point."""
+        w = self.w
+        cur = w.cursor
+        phase = cur.get("phase", "year_start")
+        if phase == "year_start":
+            w.year += 1
+            w.year_events = []
+            self._setup()
+            cur["phase"], cur["last"], cur["steps"] = "scramble", None, 0
+            return "setup"
+        if phase == "scramble":
+            if cur["steps"] >= w.params.max_events_per_year:
+                cur["phase"] = "year_end"
+                return "quiescent"
+            actor = self._next_actor(cur["last"])
+            if actor is None:
+                cur["phase"] = "year_end"
+                return "quiescent"
+            self._initiate(actor)
+            cur["last"], cur["steps"] = actor.id, cur["steps"] + 1
+            return "action"
+        if phase == "year_end":
+            self._year_end()
+            self._compaction()
+            cur["phase"], cur["last"], cur["steps"] = "year_start", None, 0
+            return "year_end"
+        return "idle"
 
     def _setup(self):
         w = self.w
@@ -80,34 +112,22 @@ class Engine:
                  f"Year {w.year}: {f} food appears in the pile for {n} people.",
                  phase="setup")
 
-    # -- the scramble: discrete-event willingness lottery ----------------- #
-    def _scramble(self):
+    # -- the scramble: one-at-a-time willingness draw --------------------- #
+    def _next_actor(self, last):
+        """Draw eligible agents ONE AT A TIME (respecting the one-step cooldown) and
+        return the FIRST that wants to act — or None if no one does (quiescent). The
+        uniform shuffle makes the actor a uniform pick among the willing. If only the
+        just-acted agent still wants to act (sole survivor / last willing person),
+        they continue rather than ending the year on the cooldown alone."""
         w = self.w
-        last = None
-        steps = 0
-        while steps < w.params.max_events_per_year:
-            # Draw agents ONE AT A TIME (respecting the one-step cooldown) and cheap-
-            # check willingness; the FIRST agent who wants to act does so. We never poll
-            # everyone — we stop at the first yes. The draw order is a uniform random
-            # shuffle, so the actor is a uniform pick among the willing (identical in
-            # effect to the old poll-all lottery), but with far fewer willingness calls
-            # in the common case where most agents want to act.
-            pool = [a for a in w.living() if a.id != last]
-            w.rng.shuffle(pool)
-            actor = next((a for a in pool if decide.willing(w, a)), None)
-            if actor is None:
-                # No one ELSE wants to act. Relax the cooldown rather than ending the
-                # year on it alone: let the just-acted agent continue if they still want
-                # to (a sole survivor, or the last willing person, securing more food).
-                # The year is quiescent only when truly no one wants to act.
-                la = w.agents.get(last) if last else None
-                if la and la.alive and decide.willing(w, la):
-                    actor = la
-                else:
-                    break
-            self._initiate(actor)
-            last = actor.id
-            steps += 1
+        pool = [a for a in w.living() if a.id != last]
+        w.rng.shuffle(pool)
+        actor = next((a for a in pool if decide.willing(w, a)), None)
+        if actor is None:
+            la = w.agents.get(last) if last else None
+            if la and la.alive and decide.willing(w, la):
+                actor = la
+        return actor
 
     def _initiate(self, actor):
         w = self.w

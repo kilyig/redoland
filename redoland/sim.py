@@ -50,7 +50,11 @@ class Simulation:
         return Engine(self.store.load_world(), self.mortality)
 
     # -- run forward on the current branch -------------------------------- #
-    def run(self, years: int, log=lambda *_: None):
+    def run(self, years: int = None, log=lambda *_: None, should_stop=lambda: False):
+        """Step the simulation forward, committing after EVERY step (so a fork can be
+        taken at any action). A year boundary additionally gets the human-friendly
+        `<branch>-y<N>` tag. Runs `years` full years (None = until extinction or
+        should_stop()); stops cleanly at a step boundary when should_stop() is true."""
         eng = self.engine()
         try:
             self.store.checkout_branch(eng.w.branch)
@@ -58,11 +62,20 @@ class Simulation:
             pass
         live = self._open_live(eng.w)
         eng.w.event_sink = live["sink"]
+        years_done = 0
         try:
-            for _ in range(years):
-                eng.run_year()
-                self.store.commit_year(eng.w, f"{eng.w.branch} year {eng.w.year}")
-                log(eng.w.year, eng.w)
+            while years is None or years_done < years:
+                if should_stop() or not eng.w.living():
+                    break
+                label = eng.step()
+                is_boundary = (label == "year_end")
+                last_ev = eng.w.year_events[-1] if eng.w.year_events else None
+                desc = (last_ev.get("text") or last_ev.get("kind")) if last_ev else label
+                self.store.commit_year(eng.w, f"y{eng.w.year} {label}: {desc[:80]}",
+                                       tag_year=is_boundary)
+                if is_boundary:
+                    years_done += 1
+                    log(eng.w.year, eng.w)
         finally:
             eng.w.event_sink = None
             live["close"]()
@@ -96,31 +109,45 @@ class Simulation:
                 pass
         return {"sink": sink, "close": close}
 
-    # -- fork ------------------------------------------------------------- #
+    # -- fork (from a year tag OR any action-commit) ---------------------- #
     def fork(self, parent_branch: str, year: int, new_branch: str = None):
         nb = safe_branch(new_branch or f"{parent_branch}_f{year}")
         nb = self.store.checkout_fork(parent_branch, year, nb)
         world = self.store.load_world()
         world.branch = nb
-        self.store.commit_year(world, f"fork {nb} from {parent_branch}@y{year}", retag=True)
+        self.store.commit_year(world, f"fork {nb} from {parent_branch}@y{year}",
+                               retag=True, tag_year=False)
         return nb
 
-    # -- inject (environmental / state change at the branch tip) ---------- #
-    def inject(self, branch: str, ratio: float = None, pile: int = None, narrate: str = None):
+    def fork_at(self, commit: str, new_branch: str):
+        """Fork a new worldline from ANY action-commit (a hash from `timeline`)."""
+        nb = self.store.checkout_fork_at(commit, new_branch)
+        world = self.store.load_world()
+        world.branch = nb
+        self.store.commit_year(world, f"fork {nb} from {commit[:10]}", tag_year=False)
+        return nb
+
+    # -- inject an event (the v1 manipulable params; public to all) ------- #
+    def inject(self, branch: str, changes: dict = None, narrative: str = None,
+               ratio: float = None, pile: int = None, narrate: str = None):
+        """Apply an authored event at the branch tip as a new commit. `changes` is the
+        structured spec (see intervene.apply_changes). Legacy ratio/pile/narrate kwargs
+        are still accepted. The explanation + the mechanical effects are recorded as one
+        PUBLIC event in every agent's memory."""
+        from .intervene import apply_changes
+        changes = dict(changes or {})
+        if ratio is not None:
+            changes.setdefault("params", {})["ratio"] = ratio
+        if pile is not None:
+            changes["pile"] = {"set": pile}
+        narrative = narrative or narrate or "An event befalls the village."
         self.store.checkout_branch(branch)
         world = self.store.load_world()
-        changes = []
-        if ratio is not None:
-            world.params.ratio = ratio
-            changes.append(f"ratio->{ratio}")
-        if pile is not None:
-            world.pile = pile
-            changes.append(f"pile->{pile}")
-        if narrate:
-            world.record("narrate", "village", f"[INJECTED] {narrate}")
-            changes.append("narrate")
-        self.store.commit_year(world, f"inject @{world.year}: {', '.join(changes)}", retag=True)
-        return changes
+        effects = apply_changes(world, changes)
+        text = narrative + (" (" + "; ".join(effects) + ")" if effects else "")
+        world.record("inject", "village", text, phase="inject")   # public → all agents
+        self.store.commit_year(world, f"inject @y{world.year}: {narrative[:50]}", tag_year=False)
+        return {"effects": effects, "text": text}
 
     # -- replay forward --------------------------------------------------- #
     def replay(self, branch: str, years: int, log=lambda *_: None):
