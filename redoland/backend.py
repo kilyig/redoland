@@ -290,7 +290,7 @@ HP {int(a.hp)}/{p.hp_max}. You hold {a.food} food. Satiation {a.health}/{p.healt
 {a.father_note or "(nothing)"}
 
 == HOW THE WORLD WORKS ==
-Each year, food appears in a central pile. Anyone may TAKE any amount of it (greedy hoards make you a target for raids). You can GIVE your own food to anyone freely. You can ATTACK another person to seize their food: they may submit or fight, and allies on both sides can be mustered. You see everyone's EXACT food, HP, strength, and age at all times. Everything physical is public: when you take from the pile, give, or attack, the whole village witnesses it and remembers. Only private conversations are unseen.
+Each year, food appears in a central pile. Anyone may TAKE any amount of it (greedy hoards make you a target for raids). You can GIVE your own food to anyone freely. You can ATTACK another person to seize their food: they may submit or fight, and allies on both sides can be mustered. You can have a CHILD with an opposite-sex partner who is not close kin: you privately offer, they accept or decline, and you split the 3-food cost between you; the child is born already grown and carries your blood. You see everyone's EXACT food, HP, strength, and age at all times. Everything physical is public: when you take from the pile, give, or attack, the whole village witnesses it and remembers. Only private conversations are unseen.
 
 == SURVIVAL RULES (exact — reason from these yourself) ==
 - SATIATION (hunger), now {a.health}/{p.health_max}: you lose 1 each year. At year's end you may eat your stored food — each food eaten restores 1 satiation, up to {p.health_max}. If satiation reaches 0 you STARVE AND DIE. (So if your satiation is 1 and you eat nothing this year, you die; you must secure and eat at least 1 food.)
@@ -361,21 +361,24 @@ Speak and act in character; be brief."""
         s = {"type": "object", "properties": {"act": {"type": "boolean"}},
              "required": ["act"], "additionalProperties": False}
         return bool(self._decide(world, a,
-                    "Do you want to take an action now (take/give/talk/attack), "
-                    "or sit this moment out? Answer act=true/false.", s, cheap=True).get("act"))
+                    "Do you want to act now — take food from the pile, give food, "
+                    "offer to have a child with someone, or attack — or sit this "
+                    "moment out? (Acting on any of your drives counts, including "
+                    "seeking a child.) Answer act=true/false.", s, cheap=True).get("act"))
 
     def choose_action(self, world, a, rng):
         s = {"type": "object", "properties": {
-            "kind": {"type": "string", "enum": ["take", "give", "convo", "attack", "pass"]},
+            "kind": {"type": "string", "enum": ["take", "give", "child", "attack", "pass"]},
             "amount": {"type": "integer"}, "target": {"type": "string"},
             "partner": {"type": "string"}, "my_share": {"type": "integer"},
             "demand": {"type": "integer"}},
             "required": ["kind"], "additionalProperties": False}
         return self._decide(world, a,
             "Choose ONE action now: take (N from the pile), give (N of your food to a "
-            "person id), convo (start a private talk with a person id — e.g. to propose a "
-            "child, with my_share of the 3-food cost), attack (a person id, demanding N "
-            "food), or pass. Use ids exactly as shown.", s)
+            "person id), child (offer to have a child with an opposite-sex, non-close-kin "
+            "person id — set partner to their id and my_share to how much of the 3-food "
+            "cost you'll pay), attack (a person id, demanding N food), or pass. Use ids "
+            "exactly as shown.", s)
 
     def respond_child(self, world, partner, proposer, my_share, rng):
         s = {"type": "object", "properties": {"accept": {"type": "boolean"}},

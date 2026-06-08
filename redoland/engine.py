@@ -155,7 +155,7 @@ class Engine:
                 w.record("give", actor.id,
                          f"{actor.name} gives {amt} food to {tgt.name}.",
                          payload={"target": tgt.id, "amount": amt})
-        elif kind == "convo":
+        elif kind in ("child", "convo"):
             self._convo_chunk(actor, action)
         elif kind == "attack":
             tgt = w.agents.get(action.get("target"))
