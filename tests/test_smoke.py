@@ -105,6 +105,13 @@ def test_cli_backend_parsing():
     check(b._safe_json_cli("not json") == {}, "garbage -> {} (no-op fallback)")
     check(b._safe_json_cli("") == {}, "empty -> {} (no-op fallback)")
     check(not hasattr(b, "_client"), "CLIBackend holds no anthropic SDK client")
+    # _envelope surfaces stop_reason so _decide can detect a truncated answer
+    text, stop = b._envelope(json.dumps(
+        {"result": "{\"act\": true}", "stop_reason": "max_tokens"}))
+    check((text, stop) == ('{"act": true}', "max_tokens"),
+          "_envelope returns (text, stop_reason)")
+    check(b._envelope("raw text") == ("raw text", None),
+          "_envelope falls back to (raw, None) for non-envelope stdout")
 
 
 if __name__ == "__main__":

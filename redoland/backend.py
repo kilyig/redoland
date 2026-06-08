@@ -548,6 +548,7 @@ class CLIBackend(AnthropicBackend):
         import json
         import os
         import subprocess
+        import sys
         sysp = self.system_prompt(world, a)
         # The CLI has no structured-output flag, so we ask for raw JSON in the
         # prompt and lean on _safe_json_text's fence-strip + {...} extraction.
@@ -556,37 +557,59 @@ class CLIBackend(AnthropicBackend):
                   "no prose, no markdown, no code fences:\n"
                   f"{json.dumps(schema)}")
         model = self.CHEAP_MODEL if cheap else self.AGENT_MODEL
-        env = dict(os.environ)
-        env.pop("ANTHROPIC_API_KEY", None)          # belt-and-suspenders: never the metered key
-        if cheap or not self.use_thinking:
-            env["MAX_THINKING_TOKENS"] = "0"
-        else:
-            env["MAX_THINKING_TOKENS"] = str(max(1024, int(a.intelligence_tokens)))
-        try:
-            proc = subprocess.run(
-                [self.CLI, "-p", prompt,
-                 "--system-prompt", sysp,
-                 "--model", model,
-                 "--output-format", "json",
-                 "--no-session-persistence"],
-                capture_output=True, text=True, timeout=self.timeout, env=env)
-        except Exception:
-            return {}                               # process/timeout failure → no-op this decision
-        return self._safe_json_cli(proc.stdout)
+        base_env = dict(os.environ)
+        base_env.pop("ANTHROPIC_API_KEY", None)     # belt-and-suspenders: never the metered key
+
+        def call(think_tokens):
+            env = dict(base_env)
+            env["MAX_THINKING_TOKENS"] = str(think_tokens)   # 0 disables extended thinking
+            try:
+                proc = subprocess.run(
+                    [self.CLI, "-p", prompt,
+                     "--system-prompt", sysp,
+                     "--model", model,
+                     "--output-format", "json",
+                     "--no-session-persistence"],
+                    capture_output=True, text=True, timeout=self.timeout, env=env)
+            except Exception:
+                return "", None                     # process/timeout failure → caller no-ops
+            return self._envelope(proc.stdout)
+
+        think = 0 if (cheap or not self.use_thinking) else max(1024, int(a.intelligence_tokens))
+        text, stop = call(think)
+        if stop == "max_tokens":
+            # The ANSWER itself was truncated (not merely the thinking) — the only
+            # genuine cutoff that yields bad output. Retry once with thinking OFF so
+            # the full output budget goes to the (small) JSON answer. The decisions
+            # here are tiny, so a no-thinking retry reliably completes cleanly.
+            sys.stderr.write(
+                f"[CLIBackend] {a.name}: answer truncated (stop_reason=max_tokens); "
+                f"retrying with thinking off\n")
+            text2, stop2 = call(0)
+            if text2:
+                text = text2
+        return AnthropicBackend._safe_json_text(text)
 
     @staticmethod
-    def _safe_json_cli(stdout):
-        """Unwrap the `claude -p --output-format json` envelope ({...,result:...})
-        to the assistant's text, then parse the action JSON from it."""
+    def _envelope(stdout):
+        """Return (assistant_text, stop_reason) from a `claude -p --output-format
+        json` envelope ({...,"result":...,"stop_reason":...}). If stdout isn't an
+        envelope, treat it as the raw text with an unknown stop_reason."""
         import json
         raw = (stdout or "").strip()
         if not raw:
-            return {}
-        text = raw
+            return "", None
         try:
             env = json.loads(raw)
             if isinstance(env, dict) and "result" in env:
-                text = env.get("result") or ""
+                return (env.get("result") or ""), env.get("stop_reason")
         except Exception:
             pass                                    # not an envelope — treat stdout as the text
+        return raw, None
+
+    @staticmethod
+    def _safe_json_cli(stdout):
+        """Unwrap the CLI envelope to the assistant's text, then parse the action
+        JSON from it (used by the no-network parsing test)."""
+        text, _ = CLIBackend._envelope(stdout)
         return AnthropicBackend._safe_json_text(text)
