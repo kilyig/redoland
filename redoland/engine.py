@@ -157,6 +157,8 @@ class Engine:
                          payload={"target": tgt.id, "amount": amt})
         elif kind in ("child", "convo"):
             self._convo_chunk(actor, action)
+        elif kind == "talk":
+            self._talk_chunk(actor, action)
         elif kind == "attack":
             tgt = w.agents.get(action.get("target"))
             if tgt and tgt.alive and tgt.id != actor.id:
@@ -186,6 +188,34 @@ class Engine:
         else:
             w.record("reject", partner.id, f"{partner.name} declines.",
                      audience=grp, phase="convo")
+
+    # -- free-form talk chunk (private, model-authored dialogue) ---------- #
+    def _talk_chunk(self, initiator, action):
+        """A private conversation: the two parties trade free-form, model-written
+        lines (alternating, up to convo_turns_cap turns) until someone ends it.
+        Audience is just the two of them — no one else witnesses or remembers it,
+        which is the whole point of 'only private conversations are unseen'."""
+        w = self.w
+        partner = w.agents.get(action.get("partner"))
+        if not partner or not partner.alive or partner.id == initiator.id:
+            return
+        grp = [initiator.id, partner.id]
+        w.record("convo", initiator.id,
+                 f"{initiator.name} draws {partner.name} aside to talk.",
+                 audience=grp, phase="convo")
+        history = ""
+        speaker, listener = initiator, partner
+        for _ in range(max(1, int(w.params.convo_turns_cap))):
+            out = self.backend.say(w, speaker, listener, history, w.rng)
+            text = (out.get("text", "") or "").strip()
+            if not text:
+                break
+            w.record("say", speaker.id, text, audience=grp,
+                     payload={"to": listener.id}, phase="convo")
+            history += f"{speaker.name}: {text}\n"
+            if out.get("done"):
+                break
+            speaker, listener = listener, speaker
 
     # -- fight chunk ------------------------------------------------------ #
     def _fight_chunk(self, initiator, target, demand):

@@ -88,6 +88,42 @@ def test_branching_diverges():
     shutil.rmtree(path, ignore_errors=True)
 
 
+def test_talk_chunk_dialogue():
+    """The free-form talk action records alternating private 'say' lines and ends
+    when a speaker signals done — no network, driven by a stub backend."""
+    from redoland.engine import World, Engine
+    from redoland.core import Agent, RNG
+
+    class TalkStub(FakeBackend):
+        def __init__(self):
+            self.n = 0
+        def say(self, world, speaker, listener, history, rng):
+            self.n += 1
+            return {"text": f"line{self.n} ({speaker.name}->{listener.name})",
+                    "done": self.n >= 3}          # 3 lines then stop
+
+    w = World(Params(convo_turns_cap=6), RNG(seed=1))
+    def mk(aid, name, sex):
+        return Agent(id=aid, name=name, sex=sex, traits={t: 50 for t in
+                     ["openness", "conscientiousness", "extraversion",
+                      "agreeableness", "neuroticism"]},
+                     intelligence_tokens=1024, memory_tokens=4000, age=30,
+                     health=3, food=2)
+    w.agents = {"a001": mk("a001", "Ana", "female"), "a002": mk("a002", "Bo", "male")}
+    eng = Engine(w, TalkStub())
+    w.year_events = []
+    eng._talk_chunk(w.agents["a001"], {"partner": "a002"})
+
+    says = [e for e in w.year_events if e["kind"] == "say"]
+    check(len(says) == 3, f"3 say-lines recorded (got {len(says)})")
+    check([e["speaker"] for e in says] == ["a001", "a002", "a001"],
+          "speakers alternate, initiator first")
+    check(all(set(e["audience"]) == {"a001", "a002"} for e in says),
+          "every line is private to the two participants")
+    # private => only the two carry it in memory, nobody else exists here anyway
+    check(any(e["kind"] == "convo" for e in w.year_events), "opener recorded")
+
+
 def test_cli_backend_parsing():
     """CLIBackend unwraps the `claude -p --output-format json` envelope and
     parses the action JSON robustly — no network, no metered key."""
@@ -118,7 +154,7 @@ if __name__ == "__main__":
     for fn in [test_mortality_monotonic, test_rng_serialization,
                test_engine_invariants, test_combat_and_repro_occur,
                test_determinism, test_branching_diverges,
-               test_cli_backend_parsing]:
+               test_talk_chunk_dialogue, test_cli_backend_parsing]:
         print(fn.__name__)
         fn()
     print("\nALL SMOKE TESTS PASSED")
