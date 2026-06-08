@@ -35,18 +35,31 @@ def test_rng_serialization():
 
 
 def test_engine_invariants():
-    eng = Engine.found(Params(ratio=1.15), FakeBackend(), seed=11)
+    eng = Engine.found(Params(), FakeBackend(), seed=11)
     for _ in range(25):
         eng.run_year()
     w = eng.w
-    check(all(0 <= a.health <= 3 for a in w.agents.values()), "health in [0,3]")
+    check(all(0 <= a.health <= 3 for a in w.agents.values()), "satiation in [0,3]")
+    check(all(0 <= a.hp <= w.params.hp_max for a in w.agents.values()), "HP in [0,100]")
+    check(all(0 <= a.strength <= 100 for a in w.agents.values()), "strength in [0,100]")
     check(all(a.food >= 0 for a in w.agents.values()), "food non-negative")
     check(all(a.intelligence_tokens >= 1024 for a in w.agents.values()),
           "intelligence >= API floor")
     check(all((a.sex in ("male", "female")) for a in w.agents.values()), "sex valid")
-    # no agent is its own kin
     check(all(a.id not in a.parents + a.children + a.siblings for a in w.agents.values()),
           "no self-kinship")
+
+
+def test_combat_and_repro_occur():
+    eng = Engine.found(Params(), FakeBackend(), seed=11)
+    kinds = set()
+    for _ in range(25):
+        for e in eng.run_year():
+            kinds.add(e["kind"])
+    check("attack" in kinds and "blow" in kinds, "raids and blows happen")
+    check("birth" in kinds, "reproduction (via convos) happens")
+    dead = [a for a in eng.w.agents.values() if not a.alive]
+    check(any(a.death_cause == "combat" for a in dead), "combat deaths occur")
 
 
 def test_determinism():
@@ -77,7 +90,8 @@ def test_branching_diverges():
 
 if __name__ == "__main__":
     for fn in [test_mortality_monotonic, test_rng_serialization,
-               test_engine_invariants, test_determinism, test_branching_diverges]:
+               test_engine_invariants, test_combat_and_repro_occur,
+               test_determinism, test_branching_diverges]:
         print(fn.__name__)
         fn()
     print("\nALL SMOKE TESTS PASSED")

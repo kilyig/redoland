@@ -31,11 +31,14 @@ def snapshot_metrics(world) -> dict:
         "deaths_total": len(dead),
         "deaths_starvation": sum(1 for a in dead if a.death_cause == "starvation"),
         "deaths_natural": sum(1 for a in dead if a.death_cause == "natural"),
+        "deaths_combat": sum(1 for a in dead if a.death_cause == "combat"),
         "food_gini": round(gini([a.food for a in living]), 3),
         "food_total": sum(a.food for a in living),
         "mean_age": round(st.mean([a.age for a in living]), 1) if living else 0,
     }
     if living:
+        m["mean_strength"] = round(st.mean(a.strength for a in living), 1)
+        m["mean_hp"] = round(st.mean(a.hp for a in living), 1)
         for t in BIG5:
             m[f"mean_{t}"] = round(st.mean(a.trait(t) for a in living), 1)
         m["mean_intelligence_tokens"] = round(st.mean(a.intelligence_tokens for a in living))

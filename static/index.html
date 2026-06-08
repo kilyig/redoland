@@ -159,7 +159,7 @@ async function selectYear(branch, year) {
   renderMetrics(data.metrics);
 }
 
-const EDITABLE = new Set(['say','propose','vote','give']);
+const EDITABLE = new Set(['say','propose','convo','reject','give','take','attack']);
 function renderEvents(branch, events) {
   const el = $('events'); el.innerHTML='';
   if (!events.length) { el.innerHTML='<div class="meta">no events</div>'; return; }

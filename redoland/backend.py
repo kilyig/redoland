@@ -1,27 +1,19 @@
-"""LLM backends.
+"""LLM backends — v2 force-and-conversation model.
 
 A backend turns world state + an agent into decisions. Two implementations:
 
-* FakeBackend   — deterministic, trait-driven heuristics seeded by the engine
-                  RNG. Needs no API key; used for all offline test runs and for
-                  exercising the web viewer. Produces lively, readable
-                  transcripts so the branching demo is meaningful.
-* AnthropicBackend — the real thing. All agents run on Claude Haiku 4.5 by
-                  default (configurable via REDOLAND_AGENT_MODEL /
-                  REDOLAND_CHEAP_MODEL). The per-agent `budget_tokens` thinking
-                  dial (the continuous intelligence knob, MVP_PLAN.md §8) stays
-                  on by default via REDOLAND_THINKING. Imported lazily.
+* FakeBackend     — deterministic, trait/strength/hunger-driven heuristics seeded
+                    by the engine RNG. No API key; the tested path for offline runs
+                    and the web viewer. Produces grabs, raids, coalitions, deaths,
+                    and births so the demo is alive.
+* AnthropicBackend — all agents on Claude Haiku 4.5 (configurable); per-agent
+                    budget_tokens thinking dial. Wired with structured-output
+                    schemas; untested without a key.
 
-Backend method contract (all take the engine `rng` so every random draw stays
-in the one replayable stream):
-
-    handraise(world, agent, rng)      -> (bool, reason)
-    turn(world, agent, rng)           -> action dict
-    offer(world, agent, cands, rng)   -> {"partner": id, "my_share": int} | None
-    respond(world, agent, offer, rng) -> bool
-    note(world, parent, child, rng)   -> str
-    eat_choice(world, agent, rng)     -> int
-    compact(world, agent, events, rng)-> str
+Decision interface (all take the engine `rng`):
+  willing / choose_action / respond_child / recruit_invites / accept_join /
+  attacker_decision / defender_decision / attacker_on_submit / morale /
+  note / eat_choice / compact
 """
 
 from __future__ import annotations
@@ -32,21 +24,15 @@ from .core import Agent, BIG5
 
 
 # --------------------------------------------------------------------------- #
-# Shared helpers.                                                              #
+# Shared helpers.                                                             #
 # --------------------------------------------------------------------------- #
 
 
-def health_state(h: int) -> str:
-    return {
-        3: "well-fed and strong",
-        2: "getting hungry",
-        1: "starving — if you do not eat this year, you will die",
-        0: "dead",
-    }.get(h, "unknown")
+def satiation_state(h: int) -> str:
+    return {3: "well-fed", 2: "getting hungry", 1: "starving", 0: "dead"}.get(h, "?")
 
 
 def need_to_cap(agent: Agent, params) -> int:
-    """Food needed to top health back to the cap this year (after the -1)."""
     return max(0, params.health_max - (agent.health - 1))
 
 
@@ -54,157 +40,190 @@ def spare_food(agent: Agent, params) -> int:
     return max(0, agent.food - need_to_cap(agent, params))
 
 
+def side_strength(world, ids) -> int:
+    return sum(world.agents[i].strength for i in ids
+               if i in world.agents and world.agents[i].alive)
+
+
 # --------------------------------------------------------------------------- #
-# Fake backend.                                                                #
+# Fake backend.                                                              #
 # --------------------------------------------------------------------------- #
 
 
 class FakeBackend:
     name = "fake"
 
-    # -- meeting ---------------------------------------------------------- #
-    def handraise(self, world, agent, rng):
-        p = 0.15 + 0.45 * (agent.trait("extraversion") / 100.0)
-        if agent.health <= 1:
-            p += 0.40
-        if self._supportable_motion(world, agent) is not None:
-            p += 0.30
-        if self._starving_kin(world, agent):
-            p += 0.25
-        p = min(0.97, max(0.02, p))
-        return rng.chance(p), "wants to speak"
+    # -- per-agent dispositions ------------------------------------------ #
+    def _aggressive(self, a):
+        return a.strength > 60 and a.trait("agreeableness") < 40
 
-    def turn(self, world, agent, rng):
-        params = world.params
-        # 1) vote on any motion I'm willing to support (need-based norm)
-        motion = self._supportable_motion(world, agent)
-        if motion is not None:
-            who = world.agents[motion.recipient].name
-            text = rng.choice([
-                f"Yes. {who} should have it.",
-                f"I'll back this — {who} needs it.",
-                f"Aye. Give it to {who}.",
-                f"Fair is fair. {who} eats.",
-            ])
-            return {"kind": "vote", "motion": motion.id, "text": text, "audience": "public"}
+    def _buffer(self, a, p):
+        return p.desired_buffer + (2 if a.trait("conscientiousness") > 60 else 0) \
+            + (1 if a.health <= 1 else 0)
 
-        # 2) hungry and nothing routes food to me yet -> propose for myself
-        if agent.health <= 1 and world.pile > 0 and not self._motion_for(world, agent.id):
-            amt = min(world.pile, 2 if agent.trait("conscientiousness") > 55 else 1)
-            text = rng.choice([
-                "I have gone hungry too long. I ask the village for a share.",
-                "I need food this year. Let it be set aside for me.",
-                "Hear me — I am starving. Grant me from the pile.",
-            ])
-            return {"kind": "propose", "amount": amt, "recipient": agent.id, "text": text,
-                    "audience": "public"}
+    def _raid_target(self, world, a, desperate=False):
+        """Richest non-kin agent this agent could plausibly beat (or anyone richer
+        if desperate)."""
+        best, best_food = None, a.food
+        kin_str = sum(world.agents[k].strength for k in a.parents + a.children + a.siblings
+                      if k in world.agents and world.agents[k].alive)
+        my_power = a.strength + kin_str
+        for o in world.living():
+            if o.id == a.id or a.is_close_kin(o.id) or o.food <= a.food:
+                continue
+            beatable = desperate or o.strength < my_power * 1.1
+            if beatable and o.food > best_food:
+                best, best_food = o, o.food
+        return best
 
-        # 3) propose food for a starving neighbour who has no motion yet (charity norm)
-        if world.pile > 0 and agent.trait("agreeableness") > 50:
-            needy = self._neediest_without_motion(world, agent)
-            if needy is not None:
-                text = rng.choice([
-                    f"{needy.name} is starving. I say we feed them.",
-                    f"Set aside a share for {needy.name} before we lose them.",
-                    f"No one here should starve while the pile sits full. For {needy.name}.",
-                ])
-                return {"kind": "propose", "amount": 1, "recipient": needy.id,
-                        "text": text, "audience": "public"}
+    def _partner(self, world, a):
+        if a.repro_done_year or a.food < 1 or not (21 <= a.age <= 55):
+            return None
+        if a.sex == "female" and a.bore_this_year:
+            return None
+        cands = [o for o in world.living()
+                 if o.sex != a.sex and not a.is_close_kin(o.id)
+                 and not o.repro_done_year and o.age >= 21
+                 and not (o.sex == "female" and o.bore_this_year)]
+        return cands[0] if cands else None
 
-        # 4) charity to starving kin / neighbours if I can spare it
-        if spare_food(agent, params) >= 1:
-            target = self._starving_kin(world, agent) or self._starving_other(world, agent)
-            if target is not None and (
-                agent.is_close_kin(target.id) or agent.trait("agreeableness") > 60
-            ):
-                text = rng.choice([
-                    f"Here, {target.name}. Take this from me.",
-                    f"{target.name}, you need it more than I do.",
-                    f"Take it, {target.name}. We look after our own.",
-                ])
-                return {"kind": "give", "target": target.id, "amount": 1, "text": text,
-                        "audience": "public"}
+    def _needy(self, world, a):
+        for kid in a.parents + a.children + a.siblings:
+            k = world.agents.get(kid)
+            if k and k.alive and k.health <= 1:
+                return k
+        others = [o for o in world.living() if o.id != a.id and o.health <= 1]
+        return others[0] if others else None
 
-        # 4) acquisitive: propose food to myself to build a store
-        if world.pile > 0 and rng.chance(0.25 + 0.4 * (1 - agent.trait("agreeableness") / 100.0)):
-            amt = min(world.pile, 1)
-            text = rng.choice([
-                "I would put some by for leaner years. I propose a share for myself.",
-                "Set a portion aside for me; I mean to save it.",
-                "I ask for a share. A wise household keeps a store.",
-            ])
-            return {"kind": "propose", "amount": amt, "recipient": agent.id, "text": text,
-                    "audience": "public"}
+    # -- scheduling ------------------------------------------------------- #
+    def willing(self, world, a, rng):
+        p = world.params
+        if world.pile > 0 and a.food < self._buffer(a, p):
+            return True
+        if a.health <= 1 and world.pile == 0 and self._raid_target(world, a, desperate=True):
+            return True
+        if self._aggressive(a) and self._raid_target(world, a) and rng.chance(0.5):
+            return True
+        if self._partner(world, a) and rng.chance(0.4):
+            return True
+        if a.trait("agreeableness") > 60 and spare_food(a, p) >= 1 and self._needy(world, a):
+            return True
+        return False
 
-        # 5) talk or stay silent
-        if agent.trait("extraversion") > 50 and rng.chance(0.5):
-            return {"kind": "say", "text": self._flavor(world, agent, rng), "audience": "public"}
+    def choose_action(self, world, a, rng):
+        p = world.params
+        # 1) survival
+        if a.health <= 1:
+            if world.pile > 0:
+                amt = max(1, min(world.pile, self._buffer(a, p) - a.food))
+                return {"kind": "take", "amount": amt}
+            t = self._raid_target(world, a, desperate=True)
+            if t:
+                return {"kind": "attack", "target": t.id, "demand": t.food}
+            return {"kind": "pass"}
+        # 2) stock up to buffer
+        if world.pile > 0 and a.food < self._buffer(a, p):
+            amt = max(1, self._buffer(a, p) - a.food)
+            if a.trait("agreeableness") < 35 and rng.chance(0.4):   # greedy grab
+                amt = max(amt, min(world.pile, a.strength // 20 + 2))
+            return {"kind": "take", "amount": min(world.pile, amt)}
+        # 3) opportunistic raid
+        if self._aggressive(a):
+            t = self._raid_target(world, a)
+            if t and rng.chance(0.6):
+                return {"kind": "attack", "target": t.id, "demand": t.food}
+        # 4) reproduce
+        part = self._partner(world, a)
+        if part and rng.chance(0.6):
+            share = 2 if (a.trait("agreeableness") > 55 or a.sex == "male") else 1
+            return {"kind": "convo", "partner": part.id, "my_share": min(share, a.food)}
+        # 5) charity
+        if a.trait("agreeableness") > 60 and spare_food(a, p) >= 1:
+            n = self._needy(world, a)
+            if n:
+                return {"kind": "give", "target": n.id, "amount": 1}
         return {"kind": "pass"}
 
     # -- reproduction ----------------------------------------------------- #
-    def offer(self, world, agent, candidates, rng):
-        params = world.params
-        if agent.food < 2:
-            return None
-        inclined = 0.20 + 0.40 * (agent.trait("openness") / 100.0)
-        if agent.age < 35:
-            inclined += 0.20
-        if not rng.chance(min(0.9, inclined)):
-            return None
-        # opposite sex, not close kin, can plausibly co-parent
-        pool = [c for c in candidates if c.sex != agent.sex and not agent.is_close_kin(c.id)]
-        if not pool:
-            return None
-        partner = rng.choice(pool)
-        generous = agent.trait("agreeableness") > 55 or agent.sex == "male"
-        my_share = 2 if generous else 1
-        my_share = min(my_share, agent.food, params.child_cost)
-        return {"partner": partner.id, "my_share": my_share}
-
-    def respond(self, world, agent, offer, rng):
-        params = world.params
-        partner_share = params.child_cost - offer["my_share"]
-        if agent.food < partner_share:
+    def respond_child(self, world, partner, proposer, my_share, rng):
+        partner_share = world.params.child_cost - my_share
+        if partner.food < partner_share or partner.repro_done_year:
             return False
-        p = 0.30 + 0.40 * (agent.trait("agreeableness") / 100.0)
-        if agent.age < 30:
-            p += 0.10
+        if partner.sex == "female" and partner.bore_this_year:
+            return False
+        p = 0.3 + 0.4 * (partner.trait("agreeableness") / 100.0)
+        if partner.age < 35:
+            p += 0.1
         return rng.chance(min(0.92, p))
 
     def note(self, world, parent, child, rng):
-        neuro = parent.trait("neuroticism")
-        openn = parent.trait("openness")
-        agree = parent.trait("agreeableness")
+        neuro, openn, agree = (parent.trait("neuroticism"), parent.trait("openness"),
+                               parent.trait("agreeableness"))
         parts = []
+        if parent.strength > 65:
+            parts.append(rng.choice([
+                "Be strong, and stand with your blood when the taking starts.",
+                "A strong arm and loyal kin are the only law out here."]))
         if neuro > 60:
             parts.append(rng.choice([
-                "Trust no one too quickly; the village smiles and then it takes.",
-                "Guard what is yours. Hunger makes thieves of friends.",
-                "Watch the ones who speak the loudest at the gathering.",
-            ]))
-        if openn > 60:
-            parts.append(rng.choice([
-                "The world is wider than this pile of food; stay curious.",
-                "Question the old rules — some are only old, not wise.",
-                "Listen to strangers; they carry news the elders fear.",
-            ]))
+                "Trust no one with a full belly and an empty conscience.",
+                "Guard your store. The pile never feeds everyone."]))
         if agree > 60:
             parts.append(rng.choice([
-                "Share when you can; a fed neighbour is a loyal one.",
-                "Keep your word. A name for fairness outlasts a full belly.",
-                "Tend your kin first, but do not let the village starve.",
-            ]))
+                "Feed your kin first, but do not become a tyrant.",
+                "Keep your word to those who fight beside you."]))
+        if openn > 60:
+            parts.append("The world is wider than this pile; stay curious.")
         if not parts:
-            parts.append(rng.choice([
-                "Eat when you can, speak when it matters, and count who owes you.",
-                "Stay alive, find a partner, and remember whose blood you carry.",
-            ]))
+            parts.append("Stay alive, find a partner, and remember whose blood you carry.")
         return f"My child, {child.name}: " + " ".join(parts)
+
+    # -- combat ----------------------------------------------------------- #
+    def recruit_invites(self, world, member, side, opposing, label, rng):
+        kin = [k for k in member.parents + member.children + member.siblings
+               if k in world.agents and world.agents[k].alive
+               and k not in side and k not in opposing]
+        return kin[:2]
+
+    def accept_join(self, world, agent, side, opposing, label, rng):
+        kin_on_side = any(agent.is_close_kin(i) for i in side)
+        p = 0.7 if kin_on_side else 0.3
+        if agent.hp < 40:
+            p -= 0.3
+        if side_strength(world, side) < side_strength(world, opposing) * 0.7:
+            p -= 0.2
+        p += 0.15 * (agent.trait("agreeableness") / 100.0)
+        return rng.chance(min(0.95, max(0.05, p)))
+
+    def attacker_decision(self, world, initiator, attackers, defenders, rng):
+        ratio = side_strength(world, attackers) / max(1, side_strength(world, defenders))
+        threshold = 0.7 if initiator.health <= 1 else 0.9
+        return "press" if ratio >= threshold else "cancel"
+
+    def defender_decision(self, world, target, attackers, defenders, rng):
+        ratio = side_strength(world, attackers) / max(1, side_strength(world, defenders))
+        if ratio >= 1.6 and (target.trait("neuroticism") > 50 or target.strength < 40):
+            return "submit"
+        return "stand"
+
+    def attacker_on_submit(self, world, initiator, attackers, defenders, rng):
+        if initiator.trait("agreeableness") < 20 and initiator.strength > 70 and rng.chance(0.2):
+            return "press_on"
+        return "accept"
+
+    def morale(self, world, fighter, my_side, enemy_side, rng):
+        if fighter.hp < 25:
+            return "flee"
+        my, en = side_strength(world, my_side), side_strength(world, enemy_side)
+        if my < en * 0.5:
+            return "flee"
+        if fighter.hp < 45 and my < en and rng.chance(0.5):
+            return "flee"
+        return "press"
 
     # -- year end --------------------------------------------------------- #
     def eat_choice(self, world, agent, rng):
-        params = world.params
-        eat = min(agent.food, need_to_cap(agent, params))
+        eat = min(agent.food, need_to_cap(agent, world.params))
         if agent.health - 1 + eat <= 0 and agent.food > 0:
             eat = max(eat, 1)
         return eat
@@ -212,80 +231,21 @@ class FakeBackend:
     def compact(self, world, agent, events, rng):
         keep = []
         for e in events:
-            if e.get("kind") in ("say", "propose", "give", "vote", "birth", "death", "narrate"):
-                who = e.get("who", "")
+            if e.get("kind") in ("take", "give", "attack", "outcome", "death", "birth",
+                                  "submit", "join", "propose"):
                 txt = (e.get("text", "") or "").strip()
                 if txt:
-                    keep.append(f"{who}: {txt}" if who else txt)
+                    keep.append(txt)
         if not keep:
             return agent.memory_summary
         ys = [e.get("year") for e in events if e.get("year") is not None]
         span = f"Years {min(ys)}–{max(ys)}" if ys else "Earlier"
-        digest = "; ".join(keep[-8:])
-        folded = f"[{span}, as {agent.name} recalls it] {digest}"
+        folded = f"[{span}, as {agent.name} recalls it] " + " ".join(keep[-8:])
         return (agent.memory_summary + " " + folded).strip()
-
-    # -- internals -------------------------------------------------------- #
-    def _motion_for(self, world, agent_id):
-        return any(m.open and m.recipient == agent_id for m in world.motions)
-
-    def _supportable_motion(self, world, agent):
-        """Highest-priority open motion this agent would vote yes on.
-
-        Encodes a simple, emergent-looking distribution norm: back food for
-        yourself, your kin, and (if you're not desperate yourself, or you're
-        agreeable) for whoever is starving. This is what lets quorum form."""
-        best, best_score = None, 0
-        for m in world.motions:
-            if not m.open or agent.id in m.yes:
-                continue
-            rec = world.agents.get(m.recipient)
-            if rec is None:
-                continue
-            score = 0
-            if m.recipient == agent.id:
-                score = 100
-            elif agent.is_close_kin(m.recipient):
-                score = 80
-            elif rec.health <= 1 and (agent.health > 1 or agent.trait("agreeableness") > 50):
-                score = 50 + (3 - rec.health)
-            elif rec.health <= 2 and agent.trait("agreeableness") > 70:
-                score = 20
-            if score > best_score:
-                best, best_score = m, score
-        return best
-
-    def _neediest_without_motion(self, world, agent):
-        cands = [a for a in world.living()
-                 if a.health <= 1 and not self._motion_for(world, a.id)]
-        cands.sort(key=lambda a: (a.health, a.id))
-        return cands[0] if cands else None
-
-    def _starving_kin(self, world, agent):
-        for kid in agent.parents + agent.children + agent.siblings:
-            k = world.agents.get(kid)
-            if k and k.alive and k.health <= 1:
-                return k
-        return None
-
-    def _starving_other(self, world, agent):
-        cands = [a for a in world.living() if a.id != agent.id and a.health <= 1]
-        return cands[0] if cands else None
-
-    def _flavor(self, world, agent, rng):
-        living = [a for a in world.living() if a.id != agent.id]
-        other = rng.choice(living).name if living else "the others"
-        return rng.choice([
-            f"The pile shrinks every year. We cannot all go on like this.",
-            f"I heard {other} took more than a fair share last winter.",
-            f"We should agree on a rule before the hunger decides for us.",
-            f"Who speaks for those with no one to speak for them?",
-            f"My children will remember how we behaved this year.",
-        ])
 
 
 # --------------------------------------------------------------------------- #
-# Anthropic backend (real). Lazily imported; untested without a key.           #
+# Anthropic backend (real). All agents on Haiku 4.5. Wired; untested w/o key. #
 # --------------------------------------------------------------------------- #
 
 
@@ -296,191 +256,178 @@ class AnthropicBackend:
         import os
         from .env import load_dotenv
         load_dotenv()
-        import anthropic  # lazy: only needed for the real backend
+        import anthropic
         self._client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
-        # All agents on Haiku by default (cheapest). Both the full agent turn
-        # and the cheap hand-raise/compaction calls use these.
         self.AGENT_MODEL = os.environ.get("REDOLAND_AGENT_MODEL", "claude-haiku-4-5")
         self.CHEAP_MODEL = os.environ.get("REDOLAND_CHEAP_MODEL", "claude-haiku-4-5")
-        # REDOLAND_THINKING=1 keeps the per-agent intelligence dial (budget_tokens
-        # extended thinking, supported on Haiku 4.5). Set to 0 if a model rejects
-        # extended thinking — agents still run, intelligence just stops varying
-        # thinking depth.
         self.use_thinking = os.environ.get("REDOLAND_THINKING", "1") != "0"
 
     # -- prompt construction --------------------------------------------- #
-    def system_prompt(self, world, agent) -> str:
-        kin = self._kin_block(world, agent)
-        big5 = "\n".join(f"{t.capitalize()}: {agent.trait(t)}/100" for t in BIG5)
-        return f"""You are {agent.name}, a person in a village. You do not know you are in a simulation; this world is the only one that exists. Never break this frame.
+    def system_prompt(self, world, a):
+        big5 = "\n".join(f"{t.capitalize()}: {a.trait(t)}/100" for t in BIG5)
+        kin = self._kin(world, a)
+        return f"""You are {a.name}, a person in a village under scarcity. You do not know you are in a simulation; this world is the only one that exists. Never break frame.
 
 == YOU ==
-Sex: {agent.sex}. Age: {agent.age}.
+Sex {a.sex}, age {a.age}, strength {a.strength}/100, HP {int(a.hp)}/100, you hold {a.food} food, you are {satiation_state(a.health)}.
 
-== YOUR PERSONALITY (0-100; texture, not labels to mention) ==
+== PERSONALITY (texture, not labels to mention) ==
 {big5}
 
-== YOUR CORE DRIVES (in order) ==
-1. Survive long enough to reproduce.
-2. Reproduce.
-3. Help your children and blood kin reproduce.
+== DRIVES (in order) ==
+1. Survive long enough to reproduce. 2. Reproduce. 3. Help your children and blood kin reproduce.
 
-== YOUR BLOOD KIN ==
+== KIN ==
 {kin}
 
-== WHAT YOUR MOTHER TOLD YOU ==
-{agent.mother_note or "(you never knew her, or she said nothing)"}
-
-== WHAT YOUR FATHER TOLD YOU ==
-{agent.father_note or "(you never knew him, or he said nothing)"}
+== MOTHER SAID ==
+{a.mother_note or "(nothing)"}
+== FATHER SAID ==
+{a.father_note or "(nothing)"}
 
 == HOW THE WORLD WORKS ==
-Each year, food appears in a central pile. The village votes on motions of the form "give N food to person X"; a motion passes with at least half the village voting yes, and the food is moved. Leftover food spoils. You may also give your own food to anyone freely. Food feeds you (keeps your health up) and pays for children (3 food, split between the two parents). Each year you age; the older you are, the more likely you are to die — few live past their 80s. If you do not eat, you starve.
+Each year food appears in a central pile. Anyone may TAKE any amount of it (greedy hoards get raided). You can GIVE your own food freely. You can ATTACK another person to seize their food — they may submit, or fight; allies on both sides can be mustered; fighting costs HP and can kill (HP 0 = death). You see everyone's exact food, HP, strength, and age. Each year you also age, can starve if unfed, and the old die more often. Speak and act in character; be brief."""
 
-Speak naturally and briefly. Your personality shapes what you do, not what you say about it."""
-
-    def _kin_block(self, world, agent) -> str:
-        def names(ids):
+    def _kin(self, world, a):
+        def n(ids):
             return ", ".join(world.agents[i].name for i in ids if i in world.agents) or "none"
-        return (f"Parents: {names(agent.parents)}\n"
-                f"Children: {names(agent.children)}\n"
-                f"Siblings: {names(agent.siblings)}")
+        return f"Parents: {n(a.parents)}; Children: {n(a.children)}; Siblings: {n(a.siblings)}"
 
-    # -- calls ------------------------------------------------------------ #
-    # NOTE: these are wired but UNTESTED (no API key in the build env). The
-    # structured-output schema forces a parseable action. budget_tokens is the
-    # continuous intelligence dial (Sonnet 4.6 supports it; min 1024).
-    def _act(self, world, agent, instruction, schema):
-        params = world.params
-        sys = self.system_prompt(world, agent)
-        situation = self._situation_text(world, agent)
-        kwargs = dict(
-            model=self.AGENT_MODEL,
-            system=sys,
-            messages=[{"role": "user", "content": f"{situation}\n\n{instruction}"}],
-            output_config={"format": {"type": "json_schema", "schema": schema}},
-        )
-        if self.use_thinking:
-            budget = max(1024, int(agent.intelligence_tokens))  # intelligence dial
-            kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
-            kwargs["max_tokens"] = budget + params.output_allowance
-        else:
-            kwargs["max_tokens"] = params.output_allowance
-        resp = self._client.messages.create(**kwargs)
-        import json
-        text = next((b.text for b in resp.content if b.type == "text"), "{}")
-        return json.loads(text)
-
-    def _situation_text(self, world, agent) -> str:
-        from .backend import health_state
-        you = f"It is year {world.year}. You are {health_state(agent.health)}. You hold {agent.food} food."
-        pile = f"The pile holds {world.pile} food."
+    def _situation(self, world, a):
         others = "; ".join(
-            f"{a.name} ({a.sex}, {health_state(a.health)})"
-            for a in world.living() if a.id != agent.id
-        )
-        motions = "; ".join(
-            f"motion {m.id}: give {m.amount} to {world.agents[m.recipient].name} "
-            f"({len(m.yes)}/{world.threshold()} yes)"
-            for m in world.motions if m.open
-        ) or "none"
-        mem = (agent.memory_summary + "\n" + "\n".join(
-            f"{e.get('who','')}: {e.get('text','')}" for e in agent.memory_raw[-12:])).strip()
-        return (f"{you} {pile}\nOthers here: {others}\nOpen motions: {motions}\n"
+            f"{o.name}({o.id}: {o.sex}, age {o.age}, str {o.strength}, HP {int(o.hp)}, food {o.food})"
+            for o in world.living() if o.id != a.id)
+        mem = (a.memory_summary + "\n" + "\n".join(
+            f"{e.get('who','')}: {e.get('text','')}" for e in a.memory_raw[-12:])).strip()
+        return (f"Year {world.year}. Pile holds {world.pile} food. You hold {a.food}, "
+                f"HP {int(a.hp)}, {satiation_state(a.health)}.\nOthers: {others}\n"
                 f"What you remember:\n{mem}")
 
-    def _cheap(self, system, prompt, schema, max_tokens=400):
+    def _decide(self, world, a, instruction, schema, cheap=False):
         import json
-        resp = self._client.messages.create(
-            model=self.CHEAP_MODEL,
-            max_tokens=max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": prompt}],
-            output_config={"format": {"type": "json_schema", "schema": schema}},
-        )
-        text = next((b.text for b in resp.content if b.type == "text"), "{}")
-        return json.loads(text)
+        sysp = self.system_prompt(world, a)
+        prompt = f"{self._situation(world, a)}\n\n{instruction}"
+        if cheap or not self.use_thinking:
+            r = self._client.messages.create(
+                model=self.CHEAP_MODEL, max_tokens=400, system=sysp,
+                messages=[{"role": "user", "content": prompt}],
+                output_config={"format": {"type": "json_schema", "schema": schema}})
+        else:
+            budget = max(1024, int(a.intelligence_tokens))
+            r = self._client.messages.create(
+                model=self.AGENT_MODEL, max_tokens=budget + world.params.output_allowance,
+                thinking={"type": "enabled", "budget_tokens": budget}, system=sysp,
+                messages=[{"role": "user", "content": prompt}],
+                output_config={"format": {"type": "json_schema", "schema": schema}})
+        return json.loads(next((b.text for b in r.content if b.type == "text"), "{}"))
 
-    # -- meeting ---------------------------------------------------------- #
-    def handraise(self, world, agent, rng):
-        schema = {"type": "object", "properties": {
-            "raise_hand": {"type": "boolean"}, "reason": {"type": "string"}},
-            "required": ["raise_hand", "reason"], "additionalProperties": False}
-        out = self._cheap(self.system_prompt(world, agent),
-                          self._situation_text(world, agent) +
-                          "\n\nDo you want to speak next at the gathering? Answer briefly.",
-                          schema, max_tokens=64)
-        return bool(out.get("raise_hand")), out.get("reason", "")
+    # -- interface -------------------------------------------------------- #
+    def willing(self, world, a, rng):
+        s = {"type": "object", "properties": {"act": {"type": "boolean"}},
+             "required": ["act"], "additionalProperties": False}
+        return bool(self._decide(world, a,
+                    "Do you want to take an action now (take/give/talk/attack), "
+                    "or sit this moment out? Answer act=true/false.", s, cheap=True).get("act"))
 
-    def turn(self, world, agent, rng):
-        schema = {"type": "object", "properties": {
-            "kind": {"type": "string", "enum": ["say", "propose", "vote", "give", "pass"]},
-            "text": {"type": "string"},
-            "amount": {"type": "integer"},
-            "recipient": {"type": "string"},
-            "target": {"type": "string"},
-            "motion": {"type": "string"},
-            "audience": {"type": "string"}},
+    def choose_action(self, world, a, rng):
+        s = {"type": "object", "properties": {
+            "kind": {"type": "string", "enum": ["take", "give", "convo", "attack", "pass"]},
+            "amount": {"type": "integer"}, "target": {"type": "string"},
+            "partner": {"type": "string"}, "my_share": {"type": "integer"},
+            "demand": {"type": "integer"}},
             "required": ["kind"], "additionalProperties": False}
-        instr = ("It is your turn to act. Choose ONE: say (speak), propose "
-                 "(give N food from the pile to a person id), vote (a motion id), "
-                 "give (N of your own food to a person id), or pass. Use person ids "
-                 "exactly as shown.")
-        out = self._act(world, agent, instr, schema)
-        out.setdefault("audience", "public")
-        return out
+        return self._decide(world, a,
+            "Choose ONE action now: take (N from the pile), give (N of your food to a "
+            "person id), convo (start a private talk with a person id — e.g. to propose a "
+            "child, with my_share of the 3-food cost), attack (a person id, demanding N "
+            "food), or pass. Use ids exactly as shown.", s)
 
-    # -- reproduction ----------------------------------------------------- #
-    def offer(self, world, agent, candidates, rng):
-        ids = ", ".join(f"{c.id}={c.name}({c.sex})" for c in candidates)
-        schema = {"type": "object", "properties": {
-            "make_offer": {"type": "boolean"},
-            "partner": {"type": "string"},
-            "my_share": {"type": "integer"}},
-            "required": ["make_offer"], "additionalProperties": False}
-        instr = (f"It is the private mating season. Eligible partners: {ids}. "
-                 f"A child costs {world.params.child_cost} food, split between the two "
-                 f"parents. Do you offer to have a child with one of them? If so give "
-                 f"their id and how much of the cost you will pay.")
-        out = self._act(world, agent, instr, schema)
-        if not out.get("make_offer"):
-            return None
-        return {"partner": out.get("partner"), "my_share": int(out.get("my_share", 1))}
+    def respond_child(self, world, partner, proposer, my_share, rng):
+        s = {"type": "object", "properties": {"accept": {"type": "boolean"}},
+             "required": ["accept"], "additionalProperties": False}
+        return bool(self._decide(world, partner,
+            f"{proposer.name} offers to have a child with you and to pay {my_share} of "
+            f"{world.params.child_cost} food; you would pay the rest. Accept?", s).get("accept"))
 
-    def respond(self, world, agent, offer, rng):
-        proposer = world.agents[offer["proposer"]].name
-        schema = {"type": "object", "properties": {"accept": {"type": "boolean"}},
-                  "required": ["accept"], "additionalProperties": False}
-        instr = (f"{proposer} offers to have a child with you and to pay "
-                 f"{offer['my_share']} of {world.params.child_cost} food; you would pay "
-                 f"the rest. Do you accept?")
-        return bool(self._act(world, agent, instr, schema).get("accept"))
+    def recruit_invites(self, world, member, side, opposing, label, rng):
+        s = {"type": "object", "properties": {
+            "invite": {"type": "array", "items": {"type": "string"}}},
+            "required": ["invite"], "additionalProperties": False}
+        names = ", ".join(f"{world.agents[i].name}({i})" for i in
+                          [x for x in world.agents if world.agents[x].alive
+                           and x not in side and x not in opposing])
+        out = self._decide(world, member,
+            f"A fight is forming. Your side ({label}ers): {self._names(world, side)}. "
+            f"Opponents: {self._names(world, opposing)}. You may invite allies to YOUR "
+            f"side (ids): {names}. List ids to invite (or empty).", s, cheap=True)
+        return [i for i in out.get("invite", []) if i in world.agents][:3]
+
+    def accept_join(self, world, a, side, opposing, label, rng):
+        s = {"type": "object", "properties": {"join": {"type": "boolean"}},
+             "required": ["join"], "additionalProperties": False}
+        return bool(self._decide(world, a,
+            f"You are asked to join the {label}ers ({self._names(world, side)}) against "
+            f"({self._names(world, opposing)}). Fighting costs HP and can kill. Join?",
+            s, cheap=True).get("join"))
+
+    def attacker_decision(self, world, a, attackers, defenders, rng):
+        s = {"type": "object", "properties": {
+            "decision": {"type": "string", "enum": ["press", "cancel"]}},
+            "required": ["decision"], "additionalProperties": False}
+        return self._decide(world, a,
+            f"Final forces — your attackers: {self._names(world, attackers)}; defenders: "
+            f"{self._names(world, defenders)}. PRESS the attack or CANCEL?", s).get("decision", "cancel")
+
+    def defender_decision(self, world, a, attackers, defenders, rng):
+        s = {"type": "object", "properties": {
+            "decision": {"type": "string", "enum": ["stand", "submit"]}},
+            "required": ["decision"], "additionalProperties": False}
+        return self._decide(world, a,
+            f"You are attacked by {self._names(world, attackers)}; your side: "
+            f"{self._names(world, defenders)}. STAND and fight, or SUBMIT (hand over food)?",
+            s).get("decision", "stand")
+
+    def attacker_on_submit(self, world, a, attackers, defenders, rng):
+        s = {"type": "object", "properties": {
+            "decision": {"type": "string", "enum": ["accept", "press_on"]}},
+            "required": ["decision"], "additionalProperties": False}
+        return self._decide(world, a,
+            "They submit. ACCEPT (take the food, no bloodshed) or PRESS_ON (attack the "
+            "surrendered anyway)?", s).get("decision", "accept")
+
+    def morale(self, world, a, my_side, enemy_side, rng):
+        s = {"type": "object", "properties": {
+            "decision": {"type": "string", "enum": ["press", "flee", "yield"]}},
+            "required": ["decision"], "additionalProperties": False}
+        return self._decide(world, a,
+            f"Mid-fight. Your side: {self._names(world, my_side)}; enemy: "
+            f"{self._names(world, enemy_side)}. Your HP {int(a.hp)}. PRESS on, FLEE, or YIELD?",
+            s, cheap=True).get("decision", "flee")
+
+    def eat_choice(self, world, a, rng):
+        s = {"type": "object", "properties": {"eat": {"type": "integer"}},
+             "required": ["eat"], "additionalProperties": False}
+        return max(0, min(a.food, int(self._decide(world, a,
+            f"Year's end. You hold {a.food} food, satiation {a.health}/3 (lose 1 this year; "
+            f"each food eaten restores 1, max 3; 0 = death). How many do you eat? Rest is "
+            f"kept as wealth.", s).get("eat", 0))))
 
     def note(self, world, parent, child, rng):
-        schema = {"type": "object", "properties": {"note": {"type": "string"}},
-                  "required": ["note"], "additionalProperties": False}
-        instr = (f"Your child {child.name} has just been born. Write a short note "
-                 f"(2-3 sentences) telling them what you want them to know about the "
-                 f"world. Speak in your own voice.")
-        return self._act(world, parent, instr, schema).get("note", "")
+        s = {"type": "object", "properties": {"note": {"type": "string"}},
+             "required": ["note"], "additionalProperties": False}
+        return self._decide(world, parent,
+            f"Your child {child.name} is born. Write a short note (2-3 sentences) on what "
+            f"you want them to know about this world. Your own voice.", s).get("note", "")
 
-    # -- year end --------------------------------------------------------- #
-    def eat_choice(self, world, agent, rng):
-        schema = {"type": "object", "properties": {"eat": {"type": "integer"}},
-                  "required": ["eat"], "additionalProperties": False}
-        instr = (f"Year's end. You hold {agent.food} food and your health is "
-                 f"{agent.health}/3 (you lose 1 this year; each food eaten restores 1, "
-                 f"to a max of 3; 0 means death). How many of your food do you eat? "
-                 f"Food not eaten is kept as wealth.")
-        return max(0, min(agent.food, int(self._act(world, agent, instr, schema).get("eat", 0))))
-
-    def compact(self, world, agent, events, rng):
-        schema = {"type": "object", "properties": {"summary": {"type": "string"}},
-                  "required": ["summary"], "additionalProperties": False}
+    def compact(self, world, a, events, rng):
+        s = {"type": "object", "properties": {"summary": {"type": "string"}},
+             "required": ["summary"], "additionalProperties": False}
         digest = "\n".join(f"{e.get('who','')}: {e.get('text','')}" for e in events)
-        out = self._cheap(
-            self.system_prompt(world, agent),
-            "Compress these older memories into a few sentences, keeping what YOU "
-            "would emotionally remember (betrayals, status, romance, debts, kin) and "
-            "dropping the mundane:\n" + digest, schema)
-        return (agent.memory_summary + " " + out.get("summary", "")).strip()
+        out = self._decide(world, a,
+            "Compress these older memories into a few sentences, keeping what YOU would "
+            "emotionally remember (kin, debts, betrayals, who attacked whom, romance):\n"
+            + digest, s, cheap=True)
+        return (a.memory_summary + " " + out.get("summary", "")).strip()
+
+    def _names(self, world, ids):
+        return ", ".join(f"{world.agents[i].name}({i})" for i in ids if i in world.agents) or "none"
