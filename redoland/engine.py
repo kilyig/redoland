@@ -105,8 +105,12 @@ class Engine:
 
     def _setup(self):
         w = self.w
+        p = w.params
         n = len(w.living())
-        f = round(n * w.params.ratio)
+        if p.food_base or p.food_floor_ratio:        # fountain + carrying-capacity floor
+            f = max(p.food_base, round(p.food_floor_ratio * n))
+        else:
+            f = round(n * p.ratio)
         w.pile = f
         for a in w.living():
             a.bore_this_year = False
