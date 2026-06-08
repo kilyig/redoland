@@ -139,10 +139,13 @@ class GitStore:
             json.dump(obj, fh, indent=1, sort_keys=True)
 
     # -- commits / tags --------------------------------------------------- #
-    def commit_year(self, world: World, message: str, retag: bool = False):
+    def commit_year(self, world: World, message: str, retag: bool = False,
+                    tag_year: bool = True):
         self.write_world(world)
         self._git("add", "-A")
         self._git("commit", "-q", "--allow-empty", "-m", message)
+        if not tag_year:           # genesis / founding state — committed but not a "year"
+            return
         tag = self.tag(world.branch, world.year)
         if retag:
             self._git("tag", "-f", tag)

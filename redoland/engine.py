@@ -73,6 +73,9 @@ class Engine:
         for a in w.living():
             a.bore_this_year = False
             a.repro_done_year = False
+        if w.year == 1:            # year 1 is the start; announce the founding here
+            w.record("narrate", "village",
+                     f"The village is founded by {n} people.", phase="setup")
         w.record("narrate", "village",
                  f"Year {w.year}: {f} food appears in the pile for {n} people.",
                  phase="setup")

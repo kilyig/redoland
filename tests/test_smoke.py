@@ -166,7 +166,8 @@ def test_worldline_fork_inject_replay():
     sim = Simulation.create(path, Params(founders=5, ratio=1.6, start_food=1), seed=7,
                             model_factory=mf, randomize_choices=False)
     sim.run(2)
-    check(sim.store.years_for_branch("main") == [0, 1, 2], "main worldline committed years 0-2")
+    check(sim.store.years_for_branch("main") == [1, 2],
+          "main worldline starts at year 1 (genesis untagged, no year 0)")
     sim.fork("main", 1, "famine")
     sim.inject("famine", ratio=0.2, narrate="A blight ruins the harvest.")
     sim.replay("famine", 2)
