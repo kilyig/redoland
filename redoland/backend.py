@@ -144,6 +144,11 @@ class FakeBackend:
                 return {"kind": "give", "target": n.id, "amount": 1}
         return {"kind": "pass"}
 
+    def say(self, world, speaker, listener, history, rng):
+        # FakeBackend never selects 'talk' in choose_action, so this is only an
+        # interface stub; it ends the conversation immediately if ever called.
+        return {"text": "", "done": True}
+
     # -- reproduction ----------------------------------------------------- #
     def respond_child(self, world, partner, proposer, my_share, rng):
         partner_share = world.params.child_cost - my_share
@@ -290,7 +295,7 @@ HP {int(a.hp)}/{p.hp_max}. You hold {a.food} food. Satiation {a.health}/{p.healt
 {a.father_note or "(nothing)"}
 
 == HOW THE WORLD WORKS ==
-Each year, food appears in a central pile. Anyone may TAKE any amount of it (greedy hoards make you a target for raids). You can GIVE your own food to anyone freely. You can ATTACK another person to seize their food: they may submit or fight, and allies on both sides can be mustered. You can have a CHILD with an opposite-sex partner who is not close kin: you privately offer, they accept or decline, and you split the 3-food cost between you; the child is born already grown and carries your blood. You see everyone's EXACT food, HP, strength, and age at all times. Everything physical is public: when you take from the pile, give, or attack, the whole village witnesses it and remembers. Only private conversations are unseen.
+Each year, food appears in a central pile. Anyone may TAKE any amount of it (greedy hoards make you a target for raids). You can GIVE your own food to anyone freely. You can TALK privately with any one person — a free-form conversation only the two of you hear and remember; use it to bond, plan, warn, court, scheme, or just pass the time. You can ATTACK another person to seize their food: they may submit or fight, and allies on both sides can be mustered. You can have a CHILD with an opposite-sex partner who is not close kin: you privately offer, they accept or decline, and you split the 3-food cost between you; the child is born already grown and carries your blood. You see everyone's EXACT food, HP, strength, and age at all times. Everything physical is public: when you take from the pile, give, or attack, the whole village witnesses it and remembers. Only private conversations are unseen.
 
 == SURVIVAL RULES (exact — reason from these yourself) ==
 - SATIATION (hunger), now {a.health}/{p.health_max}: you lose 1 each year. At year's end you may eat your stored food — each food eaten restores 1 satiation, up to {p.health_max}. If satiation reaches 0 you STARVE AND DIE. (So if your satiation is 1 and you eat nothing this year, you die; you must secure and eat at least 1 food.)
@@ -397,23 +402,43 @@ Speak and act in character; be brief."""
              "required": ["act"], "additionalProperties": False}
         return bool(self._decide(world, a,
                     "Do you want to act now — take food from the pile, give food, "
-                    "offer to have a child with someone, or attack — or sit this "
-                    "moment out? (Acting on any of your drives counts, including "
-                    "seeking a child.) Answer act=true/false.", s, cheap=True).get("act"))
+                    "talk privately with someone, offer to have a child with someone, "
+                    "or attack — or sit this moment out? (Acting on any of your drives "
+                    "or wanting a conversation counts.) Answer act=true/false.",
+                    s, cheap=True).get("act"))
 
     def choose_action(self, world, a, rng):
         s = {"type": "object", "properties": {
-            "kind": {"type": "string", "enum": ["take", "give", "child", "attack", "pass"]},
+            "kind": {"type": "string",
+                     "enum": ["take", "give", "talk", "child", "attack", "pass"]},
             "amount": {"type": "integer"}, "target": {"type": "string"},
             "partner": {"type": "string"}, "my_share": {"type": "integer"},
             "demand": {"type": "integer"}},
             "required": ["kind"], "additionalProperties": False}
         return self._decide(world, a,
             "Choose ONE action now: take (N from the pile), give (N of your food to a "
-            "person id), child (offer to have a child with an opposite-sex, non-close-kin "
+            "person id), talk (start a private free-form conversation with another person "
+            "— set partner to their id; use this to bond, plan, warn, court, scheme, or "
+            "just talk), child (offer to have a child with an opposite-sex, non-close-kin "
             "person id — set partner to their id and my_share to how much of the 3-food "
             "cost you'll pay), attack (a person id, demanding N food), or pass. Use ids "
             "exactly as shown.", s)
+
+    def say(self, world, speaker, listener, history, rng):
+        """One free-form line in a private conversation. Returns {text, done}."""
+        s = {"type": "object", "properties": {
+            "text": {"type": "string"}, "done": {"type": "boolean"}},
+            "required": ["text"], "additionalProperties": False}
+        convo = history.strip() or "(no one has spoken yet — you open.)"
+        out = self._decide(world, speaker,
+            f"You pulled {listener.name} aside for a PRIVATE talk — no one else hears "
+            f"this, and it is not witnessed or remembered by anyone but the two of you. "
+            f"Conversation so far:\n{convo}\n\n"
+            f"Say the next thing YOU say to {listener.name}, in your own voice — anything: "
+            f"small talk, memories, plans, warnings, courtship, scheming, asking a favor. "
+            f"1-3 sentences. Set done=true only if the conversation has reached a natural "
+            f"end after your line.", s)
+        return {"text": out.get("text", ""), "done": bool(out.get("done"))}
 
     def respond_child(self, world, partner, proposer, my_share, rng):
         s = {"type": "object", "properties": {"accept": {"type": "boolean"}},
