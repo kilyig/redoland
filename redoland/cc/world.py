@@ -21,10 +21,14 @@ from ..core import Agent, Params, RNG
 
 class World:
     def __init__(self, params: Params, rng: RNG, branch: str = "main",
-                 model_factory: Optional[Callable[[int], object]] = None):
+                 model_factory: Optional[Callable[[int], object]] = None,
+                 randomize_choices: bool = True):
         self.params = params
         self.rng = rng
         self.branch = branch
+        # Concordia shuffles CHOICE options to reduce position bias (good for the
+        # real model; turn OFF for deterministic tests with the scripted stub).
+        self.randomize_choices = randomize_choices
         self.year = 0
         self.pile = 0
         self.agents: dict[str, Agent] = {}        # bodies (serializable, engine-mutated)

@@ -130,22 +130,23 @@ class ClaudeCLIModel(language_model.LanguageModel):
 
     def sample_choice(self, prompt: str, responses: Sequence[str], *,
                       seed: Optional[int] = None) -> tuple[int, str, Mapping[str, Any]]:
-        letters = [chr(ord("a") + i) for i in range(len(responses))]
-        menu = "\n".join(f"  ({l}) {r}" for l, r in zip(letters, responses))
-        q = (f"{prompt}\n\nChoose exactly ONE option. Respond with ONLY its letter "
-             f"({letters[0]}-{letters[-1]}) and nothing else:\n{menu}")
+        """Concordia passes single letters ('a','b',…) as `responses`, with the
+        lettered menu already in `prompt`. Pick one and return its index. (Also
+        works if called directly with full-text options.)"""
+        opts = [str(r) for r in responses]
+        q = (prompt.rstrip() + "\n\nReply with ONLY your choice, exactly as written "
+             "(no explanation): " + " | ".join(opts))
+        order = sorted(range(len(opts)), key=lambda j: -len(opts[j]))   # longest first
         for attempt in range(3):
             raw = self._run(q, thinking=0 if attempt else self._thinking).strip().lower()
-            m = re.search(r"[a-z]", raw)
-            if m:
-                idx = ord(m.group(0)) - ord("a")
-                if 0 <= idx < len(responses):
-                    return idx, responses[idx], {"raw": raw}
-            # fallback: maybe it echoed the option text
-            for i, r in enumerate(responses):
-                if r.lower() in raw:
-                    return i, responses[i], {"raw": raw}
-        return 0, responses[0], {"raw": "fallback", "fallback": True}
+            for i in order:
+                o = opts[i].lower()
+                if len(o) == 1:
+                    if re.search(r"(?<![a-z0-9])" + re.escape(o) + r"(?![a-z0-9])", raw):
+                        return i, opts[i], {"raw": raw}
+                elif o and o in raw:
+                    return i, opts[i], {"raw": raw}
+        return 0, opts[0], {"raw": "fallback", "fallback": True}
 
 
 # --------------------------------------------------------------------------- #
