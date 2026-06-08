@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from .core import Agent, BIG5
+from .core import Agent, BIG5, Mortality
 
 
 # --------------------------------------------------------------------------- #
@@ -258,18 +258,22 @@ class AnthropicBackend:
         load_dotenv()
         import anthropic
         self._client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
+        self._mortality = Mortality()   # so the prompt can state each agent's own age-death odds
         self.AGENT_MODEL = os.environ.get("REDOLAND_AGENT_MODEL", "claude-haiku-4-5")
         self.CHEAP_MODEL = os.environ.get("REDOLAND_CHEAP_MODEL", "claude-haiku-4-5")
         self.use_thinking = os.environ.get("REDOLAND_THINKING", "1") != "0"
 
     # -- prompt construction --------------------------------------------- #
     def system_prompt(self, world, a):
+        p = world.params
         big5 = "\n".join(f"{t.capitalize()}: {a.trait(t)}/100" for t in BIG5)
         kin = self._kin(world, a)
+        death_pct = f"{self._mortality.q(a.age, a.sex) * 100:.1f}%"
         return f"""You are {a.name}, a person in a village under scarcity. You do not know you are in a simulation; this world is the only one that exists. Never break frame.
 
 == YOU ==
-Sex {a.sex}, age {a.age}, strength {a.strength}/100, HP {int(a.hp)}/100, you hold {a.food} food, you are {satiation_state(a.health)}.
+Sex {a.sex}, age {a.age}, strength {a.strength}/100.
+HP {int(a.hp)}/{p.hp_max}. You hold {a.food} food. Satiation {a.health}/{p.health_max}.
 
 == PERSONALITY (texture, not labels to mention) ==
 {big5}
@@ -286,7 +290,15 @@ Sex {a.sex}, age {a.age}, strength {a.strength}/100, HP {int(a.hp)}/100, you hol
 {a.father_note or "(nothing)"}
 
 == HOW THE WORLD WORKS ==
-Each year food appears in a central pile. Anyone may TAKE any amount of it (greedy hoards get raided). You can GIVE your own food freely. You can ATTACK another person to seize their food — they may submit, or fight; allies on both sides can be mustered; fighting costs HP and can kill (HP 0 = death). You see everyone's exact food, HP, strength, and age. Each year you also age, can starve if unfed, and the old die more often. Speak and act in character; be brief."""
+Each year, food appears in a central pile. Anyone may TAKE any amount of it (greedy hoards make you a target for raids). You can GIVE your own food to anyone freely. You can ATTACK another person to seize their food: they may submit or fight, and allies on both sides can be mustered. You see everyone's EXACT food, HP, strength, and age at all times.
+
+== SURVIVAL RULES (exact — reason from these yourself) ==
+- SATIATION (hunger), now {a.health}/{p.health_max}: you lose 1 each year. At year's end you may eat your stored food — each food eaten restores 1 satiation, up to {p.health_max}. If satiation reaches 0 you STARVE AND DIE. (So if your satiation is 1 and you eat nothing this year, you die; you must secure and eat at least 1 food.)
+- HP, now {int(a.hp)}/{p.hp_max}: in a fight you lose HP; at 0 you DIE. In one blow-exchange your side loses (c × the enemy's total strength) HP, split among your side — so being outnumbered or facing strong enemies is deadly, and numbers protect each fighter (c = {p.c_lethality}). If you end the year well-fed (satiation ≥ {p.hp_recovery_min_satiation}) you heal +{p.hp_recovery} HP; otherwise you heal nothing that year.
+- AGE, now {a.age}: you grow one year older each year. Your chance of simply dying of age THIS year is about {death_pct} (it climbs steeply with age; few live past their 80s).
+- A CHILD costs {p.child_cost} food, split between the two parents (negotiated).
+
+Speak and act in character; be brief."""
 
     def _kin(self, world, a):
         def n(ids):
@@ -299,9 +311,9 @@ Each year food appears in a central pile. Anyone may TAKE any amount of it (gree
             for o in world.living() if o.id != a.id)
         mem = (a.memory_summary + "\n" + "\n".join(
             f"{e.get('who','')}: {e.get('text','')}" for e in a.memory_raw[-12:])).strip()
-        return (f"Year {world.year}. Pile holds {world.pile} food. You hold {a.food}, "
-                f"HP {int(a.hp)}, {satiation_state(a.health)}.\nOthers: {others}\n"
-                f"What you remember:\n{mem}")
+        return (f"Year {world.year}. Pile holds {world.pile} food. You hold {a.food} food, "
+                f"HP {int(a.hp)}/{world.params.hp_max}, satiation {a.health}/{world.params.health_max}."
+                f"\nOthers (exact): {others}\nWhat you remember:\n{mem}")
 
     def _decide(self, world, a, instruction, schema, cheap=False):
         import json
@@ -416,8 +428,11 @@ Each year food appears in a central pile. Anyone may TAKE any amount of it (gree
         s = {"type": "object", "properties": {"note": {"type": "string"}},
              "required": ["note"], "additionalProperties": False}
         return self._decide(world, parent,
-            f"Your child {child.name} is born. Write a short note (2-3 sentences) on what "
-            f"you want them to know about this world. Your own voice.", s).get("note", "")
+            f"Your child {child.name} is born and will grow up knowing only what you tell "
+            f"them. Write a short note (2-4 sentences) telling them what you want them to "
+            f"know about this world — your convictions AND the social lay of the land as you "
+            f"see it: who to trust or fear, who their kin and allies are, who has wronged "
+            f"your family. Your own voice.", s).get("note", "")
 
     def compact(self, world, a, events, rng):
         s = {"type": "object", "properties": {"summary": {"type": "string"}},
