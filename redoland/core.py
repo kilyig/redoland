@@ -27,6 +27,14 @@ class Params:
     start_food: int = 2
     start_health: int = 3
     health_max: int = 3
+    # --- fountain / carrying-capacity food model (optional; overrides `ratio`) ---
+    # If either is set, F = max(food_base, round(food_floor_ratio * N)):
+    #   food_base       — a fixed fountain output (abundance bootstrap, e.g. 25)
+    #   food_floor_ratio— grow food so food-per-person never drops below this
+    #                     (e.g. 0.9 → mild-scarcity carrying-capacity equilibrium)
+    # With both 0, the classic F = round(N * ratio) is used.
+    food_base: int = 0
+    food_floor_ratio: float = 0.0
     # F = round(N_living * ratio). v2 default 1.5: combat adds a large mortality
     # channel, so the v1 "1.15" tuning is invalid — at 1.5/c=0.3 the FakeBackend
     # village survives every seed over 50y (small, ~4-6, clan-feud-driven, with
