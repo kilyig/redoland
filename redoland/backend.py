@@ -354,7 +354,34 @@ Speak and act in character; be brief."""
                 thinking={"type": "enabled", "budget_tokens": budget}, system=sysp,
                 messages=[{"role": "user", "content": prompt}],
                 output_config={"format": {"type": "json_schema", "schema": schema}})
-        return json.loads(next((b.text for b in r.content if b.type == "text"), "{}"))
+        return self._safe_json(r)
+
+    @staticmethod
+    def _safe_json(resp):
+        """Parse the model's structured output robustly. A malformed / empty /
+        refusal / truncated response must NOT crash a multi-hour run — fall back
+        to {} so the caller's .get(...) defaults apply (the agent simply no-ops
+        that one micro-decision)."""
+        import json
+        import re
+        text = (next((b.text for b in resp.content if b.type == "text"), "") or "").strip()
+        if text.startswith("```"):                 # strip ```json ... ``` fences
+            text = text.strip("`")
+            if text[:4].lower() == "json":
+                text = text[4:]
+            text = text.strip()
+        if not text:
+            return {}
+        try:
+            return json.loads(text)
+        except Exception:
+            m = re.search(r"\{.*\}", text, re.S)   # grab the first {...} block, if any
+            if m:
+                try:
+                    return json.loads(m.group(0))
+                except Exception:
+                    pass
+            return {}
 
     # -- interface -------------------------------------------------------- #
     def willing(self, world, a, rng):
