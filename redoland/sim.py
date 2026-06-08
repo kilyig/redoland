@@ -32,8 +32,12 @@ class Simulation:
         sim = cls(store, mortality)
         eng = Engine.found(params, model_factory, seed, sim.mortality,
                            randomize_choices=randomize_choices)
-        store.commit_year(eng.w, f"found: {params.founders} agents, seed {seed}, "
-                                 f"ratio {params.ratio}")
+        # The founding population is a pre-year-1 genesis snapshot: committed (so a
+        # later run can load it) but NOT tagged as a year. The simulation starts at
+        # year 1, which announces the founding in its own transcript.
+        store.commit_year(eng.w, f"genesis: founding population "
+                                 f"({params.founders} agents, seed {seed}, ratio {params.ratio})",
+                          tag_year=False)
         return sim
 
     @classmethod
