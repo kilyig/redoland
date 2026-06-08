@@ -50,7 +50,10 @@ def cmd_init(a):
 
 
 def cmd_run(a):
-    _sim(a.name).run(a.years, log=lambda y, w: print(f"  year {y}: {len(w.living())} living"))
+    sim = _sim(a.name)
+    if getattr(a, "branch", None):
+        sim.store.checkout_branch(a.branch)
+    sim.run(a.years, log=lambda y, w: print(f"  year {y}: {len(w.living())} living"))
 
 
 def cmd_log(a):
@@ -67,12 +70,36 @@ def cmd_log(a):
 
 
 def cmd_fork(a):
-    print("forked:", _sim(a.name).fork(a.parent, a.year, a.fork_name))
+    sim = _sim(a.name)
+    if a.at:                              # fork from any action-commit
+        print("forked:", sim.fork_at(a.at, a.fork_name or f"fork_{a.at[:6]}"))
+    else:                                 # fork from a year tag
+        print("forked:", sim.fork(a.parent, a.year, a.fork_name))
 
 
 def cmd_inject(a):
-    ch = _sim(a.name).inject(a.branch, ratio=a.ratio, pile=a.pile, narrate=a.narrate)
-    print("injected:", ", ".join(ch) or "nothing")
+    changes = json.loads(a.changes) if a.changes else {}
+    res = _sim(a.name).inject(a.branch, changes=changes, narrative=a.narrate,
+                              ratio=a.ratio, pile=a.pile)
+    print("injected:", res["text"])
+    print("effects:", res["effects"])
+
+
+def cmd_timeline(a):
+    for r in _sim(a.name).store.timeline(a.branch, n=a.n):
+        print(f"  {r['commit']}  {r['desc']}")
+
+
+def cmd_state(a):
+    s = _sim(a.name).store
+    ref = a.at or (s.tag(a.branch, a.year) if a.year is not None else None)
+    w = s.load_world(ref)
+    print(f"branch {w.branch}  year {w.year}  phase {w.cursor.get('phase')}  pile {w.pile}  "
+          f"living {len(w.living())}")
+    for x in w.living():
+        print(f"  {x.id} {x.name:9} {x.sex:6} age {x.age:>2} food {x.food:>2} "
+              f"hp {int(x.hp):>3} str {x.strength:>3} sat {x.health}/{w.params.health_max} "
+              f"int {x.intelligence_tokens} mem {x.memory_tokens}")
 
 
 def cmd_replay(a):
@@ -101,17 +128,30 @@ def build_parser():
     s.add_argument("--years", type=int, default=0); s.set_defaults(fn=cmd_init)
 
     s = sub.add_parser("run"); s.add_argument("name"); s.add_argument("--years", type=int, default=5)
-    s.set_defaults(fn=cmd_run)
+    s.add_argument("--branch", default=None); s.set_defaults(fn=cmd_run)
 
     s = sub.add_parser("log"); s.add_argument("name"); s.set_defaults(fn=cmd_log)
 
+    s = sub.add_parser("timeline", help="per-action commit history (fork points)")
+    s.add_argument("name"); s.add_argument("--branch", default=None)
+    s.add_argument("--n", type=int, default=40); s.set_defaults(fn=cmd_timeline)
+
+    s = sub.add_parser("state", help="world snapshot (roster) at a branch/year/commit")
+    s.add_argument("name"); s.add_argument("--branch", default="main")
+    s.add_argument("--year", type=int, default=None); s.add_argument("--at", default=None)
+    s.set_defaults(fn=cmd_state)
+
     s = sub.add_parser("fork"); s.add_argument("name"); s.add_argument("--parent", default="main")
-    s.add_argument("--year", type=int, required=True); s.add_argument("--name", dest="fork_name", default=None)
+    s.add_argument("--year", type=int, default=None)
+    s.add_argument("--at", default=None, help="commit hash to fork from (any action)")
+    s.add_argument("--name", dest="fork_name", default=None)
     s.set_defaults(fn=cmd_fork)
 
     s = sub.add_parser("inject"); s.add_argument("name"); s.add_argument("--branch", required=True)
+    s.add_argument("--changes", default=None, help="JSON: agents/kill/pile/spawn/params")
+    s.add_argument("--narrate", default=None, help="the explanation shown to all agents")
     s.add_argument("--ratio", type=float, default=None); s.add_argument("--pile", type=int, default=None)
-    s.add_argument("--narrate", default=None); s.set_defaults(fn=cmd_inject)
+    s.set_defaults(fn=cmd_inject)
 
     s = sub.add_parser("replay"); s.add_argument("name"); s.add_argument("--branch", required=True)
     s.add_argument("--years", type=int, default=5); s.set_defaults(fn=cmd_replay)
