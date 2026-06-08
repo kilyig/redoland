@@ -3,289 +3,172 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Redoland — Worldline Viewer</title>
+<title>Redoland</title>
 <style>
   :root { --bg:#14110e; --panel:#1d1813; --ink:#ece3d4; --dim:#9a8f7d;
           --accent:#c8743a; --line:#332a20; --good:#6fae6f; --bad:#cc5b5b; }
   * { box-sizing:border-box; }
-  body { margin:0; font:14px/1.5 ui-monospace,Menlo,Consolas,monospace;
+  body { margin:0; font:14px/1.55 ui-monospace,Menlo,Consolas,monospace;
          background:var(--bg); color:var(--ink); }
-  header { padding:10px 16px; border-bottom:1px solid var(--line);
+  header { padding:11px 18px; border-bottom:1px solid var(--line);
            display:flex; gap:14px; align-items:baseline; }
-  header b { color:var(--accent); font-size:16px; letter-spacing:.5px; }
-  header span { color:var(--dim); }
-  .wrap { display:grid; grid-template-columns:260px 1fr 320px; height:calc(100vh - 46px); }
-  .col { overflow:auto; padding:12px; }
-  .col + .col { border-left:1px solid var(--line); }
-  h3 { margin:4px 0 8px; color:var(--dim); font-weight:600; text-transform:uppercase;
-       font-size:11px; letter-spacing:1px; }
-  .branch { padding:7px 9px; border:1px solid var(--line); border-radius:6px;
-            margin-bottom:7px; cursor:pointer; background:var(--panel); }
-  .branch.sel { border-color:var(--accent); }
-  .branch .nm { color:var(--accent); font-weight:700; }
-  .branch .meta { color:var(--dim); font-size:12px; }
-  .years { display:flex; flex-wrap:wrap; gap:3px; margin-top:6px; }
-  .yr { padding:1px 6px; border:1px solid var(--line); border-radius:4px; cursor:pointer;
-        font-size:11px; color:var(--dim); }
-  .yr.sel { background:var(--accent); color:#14110e; border-color:var(--accent); }
-  .ev { padding:4px 0; border-bottom:1px dashed var(--line); display:flex; gap:8px; }
-  .ev .k { color:var(--dim); min-width:64px; font-size:11px; padding-top:2px; }
-  .ev .who { color:var(--accent); }
-  .ev.think { opacity:.6; font-style:italic; }
-  .ev.narrate .who, .ev.birth .who, .ev.death .who { color:var(--good); }
-  .ev.death .who { color:var(--bad); }
-  .ev .edit { color:var(--dim); cursor:pointer; border:none; background:none;
-              font-size:12px; }
-  .ev .edit:hover { color:var(--accent); }
-  .ev.edited .body::after { content:" (edited)"; color:var(--accent); font-size:11px; }
-  table.m { width:100%; border-collapse:collapse; }
-  table.m td { padding:2px 4px; border-bottom:1px solid var(--line); }
-  table.m td:last-child { text-align:right; color:var(--accent); }
-  fieldset { border:1px solid var(--line); border-radius:6px; margin:10px 0; padding:8px; }
-  legend { color:var(--dim); font-size:11px; text-transform:uppercase; }
-  input, button, select { font:inherit; background:#0f0d0a; color:var(--ink);
-          border:1px solid var(--line); border-radius:4px; padding:3px 6px; }
-  button { cursor:pointer; }
-  button.go { background:var(--accent); color:#14110e; border:none; font-weight:700; }
-  #livebtn { border:1px solid var(--line); }
+  header b { color:var(--accent); font-size:16px; letter-spacing:1px; }
+  header .run { color:var(--dim); }
+  #livebtn { margin-left:auto; font:inherit; cursor:pointer; padding:3px 10px;
+             background:#0f0d0a; color:var(--ink); border:1px solid var(--line);
+             border-radius:5px; }
   #livebtn.on { color:#14110e; background:var(--bad); border-color:var(--bad);
                 animation:pulse 1.1s infinite; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.55} }
-  .row { display:flex; gap:6px; margin:4px 0; align-items:center; }
-  .row label { color:var(--dim); min-width:54px; font-size:12px; }
-  .row input { flex:1; min-width:0; }
-  svg { width:100%; height:120px; background:#0f0d0a; border:1px solid var(--line);
-        border-radius:6px; }
-  .msg { color:var(--good); font-size:12px; min-height:16px; }
-  pre.diff { white-space:pre-wrap; font-size:12px; color:var(--ink); }
+  .wrap { display:grid; grid-template-columns:150px 1fr 300px; height:calc(100vh - 47px); }
+  .col { overflow:auto; padding:14px; }
+  .col + .col { border-left:1px solid var(--line); }
+  h3 { margin:0 0 10px; color:var(--dim); font-weight:600; text-transform:uppercase;
+       font-size:11px; letter-spacing:1.2px; }
+  /* year tabs */
+  .yr { display:block; width:100%; text-align:left; padding:7px 11px; margin-bottom:5px;
+        border:1px solid var(--line); border-radius:6px; background:var(--panel);
+        color:var(--ink); cursor:pointer; font:inherit; }
+  .yr:hover { border-color:var(--dim); }
+  .yr.sel { background:var(--accent); color:#14110e; border-color:var(--accent);
+            font-weight:700; }
+  /* transcript */
+  .ev { padding:5px 0; border-bottom:1px dashed var(--line); display:flex; gap:10px; }
+  .ev .k { color:var(--dim); min-width:62px; font-size:11px; padding-top:2px;
+           text-transform:uppercase; }
+  .ev .who { color:var(--accent); }
+  .ev.narrate .who, .ev.birth .who { color:var(--good); }
+  .ev.death .who, .ev.outcome .who { color:var(--bad); }
+  .ev.attack .k, .ev.blow .k, .ev.muster .k, .ev.join .k, .ev.flee .k,
+  .ev.submit .k, .ev.cancel .k { color:var(--bad); }
+  .empty { color:var(--dim); }
+  /* stats */
+  table.stats { width:100%; border-collapse:collapse; }
+  table.stats td { padding:3px 4px; border-bottom:1px solid var(--line); }
+  table.stats td:last-child { text-align:right; color:var(--accent); }
+  table.stats tr.head td { color:var(--dim); text-transform:uppercase; font-size:10px;
+        letter-spacing:1px; border-bottom:1px solid var(--line); padding-top:10px; }
+  table.stats td.sub { color:var(--dim); padding-left:16px; }
 </style>
 </head>
 <body>
 <header>
-  <b>REDOLAND</b><span id="runname"></span>
-  <button id="livebtn" onclick="toggleLive()" style="margin-left:auto">● Live</button>
-  <span id="status"></span>
+  <b>REDOLAND</b><span class="run" id="runname"></span>
+  <button id="livebtn" onclick="toggleLive()">● Live</button>
 </header>
 <div class="wrap">
-  <div class="col" id="left">
-    <h3>Worldlines</h3>
-    <div id="branches"></div>
-    <h3 style="margin-top:14px">Population over time</h3>
-    <svg id="chart" viewBox="0 0 300 120" preserveAspectRatio="none"></svg>
-    <div class="meta" id="chartlegend" style="color:var(--dim);font-size:11px"></div>
-  </div>
-
-  <div class="col" id="center">
-    <h3 id="transcript-title">Transcript</h3>
-    <div id="events"></div>
-  </div>
-
-  <div class="col" id="right">
-    <h3>Metrics <span id="mlabel" style="color:var(--accent)"></span></h3>
-    <table class="m"><tbody id="metrics"></tbody></table>
-
-    <fieldset><legend>Fork a worldline</legend>
-      <div class="row"><label>parent</label><input id="f_parent"></div>
-      <div class="row"><label>year</label><input id="f_year" type="number"></div>
-      <div class="row"><label>name</label><input id="f_name" placeholder="drought"></div>
-      <button class="go" onclick="doFork()">Fork</button>
-    </fieldset>
-
-    <fieldset><legend>Inject (at branch tip)</legend>
-      <div class="row"><label>branch</label><input id="i_branch"></div>
-      <div class="row"><label>ratio</label><input id="i_ratio" type="number" step="0.05" placeholder="0.55"></div>
-      <div class="row"><label>note</label><input id="i_note" placeholder="A drought settles in"></div>
-      <button class="go" onclick="doInject()">Inject</button>
-    </fieldset>
-
-    <fieldset><legend>Replay forward</legend>
-      <div class="row"><label>branch</label><input id="r_branch"></div>
-      <div class="row"><label>years</label><input id="r_years" type="number" value="15"></div>
-      <button class="go" onclick="doReplay()">Replay</button>
-    </fieldset>
-
-    <fieldset><legend>Compare</legend>
-      <div class="row"><label>A</label><input id="d_a" placeholder="branch"><input id="d_ya" type="number" placeholder="year" style="max-width:70px"></div>
-      <div class="row"><label>B</label><input id="d_b" placeholder="branch"><input id="d_yb" type="number" placeholder="year" style="max-width:70px"></div>
-      <button class="go" onclick="doDiff()">Diff</button>
-      <pre class="diff" id="diffout"></pre>
-    </fieldset>
-    <div class="msg" id="msg"></div>
-  </div>
+  <div class="col" id="left"><h3>Years</h3><div id="years"></div></div>
+  <div class="col" id="center"><h3 id="ttitle">Transcript</h3><div id="events"></div></div>
+  <div class="col" id="right"><h3>Stats <span id="slabel" style="color:var(--accent)"></span></h3>
+    <table class="stats"><tbody id="stats"></tbody></table></div>
 </div>
 
 <script>
-let TREE = {branches:[]};
-let SEL = {branch:null, year:null};
 const $ = id => document.getElementById(id);
-const api = (p) => fetch(p).then(r=>r.json());
-const post = (p,b) => fetch(p,{method:'POST',headers:{'Content-Type':'application/json'},
-                              body:JSON.stringify(b)}).then(r=>r.json());
-const palette = ['#c8743a','#6fae6f','#5b8fcc','#cc5b9f','#c9c05b','#5bc9c0'];
+const api = p => fetch(p).then(r => r.json());
+const escapeHtml = s => (s||'').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+let YEARS = [], SEL = null, ES = null;
 
-async function loadTree(keepSel) {
-  TREE = await api('/api/tree');
-  renderBranches();
-  drawChart();
-  if (!keepSel && TREE.branches.length) {
-    const b = TREE.branches[0];
-    selectYear(b.branch, b.years[b.years.length-1]);
-  }
+// kinds hidden from the transcript (private bookkeeping / noise)
+const HIDE = new Set(['eat','pass','compaction','under_attack']);
+
+async function loadYears(keepSel){
+  const tree = await api('/api/tree');
+  const main = (tree.branches||[]).find(b => b.branch === 'main');
+  YEARS = main ? main.years : [];
+  renderYears();
+  if (!ES && (SEL===null || !YEARS.includes(SEL)) && YEARS.length)
+    selectYear(YEARS[YEARS.length-1]);
 }
 
-function renderBranches() {
-  const el = $('branches'); el.innerHTML='';
-  TREE.branches.forEach(b => {
-    const d = document.createElement('div');
-    d.className = 'branch' + (b.branch===SEL.branch?' sel':'');
-    const m = b.tip;
-    d.innerHTML = `<div class="nm">${b.branch}</div>
-      <div class="meta">y${b.years[0]}–y${b.years[b.years.length-1]} ·
-      pop ${m.population} · born ${m.births} · gen ${m.max_generation??'–'}</div>
-      <div class="years">${b.years.map(y=>`<span class="yr${SEL.branch===b.branch&&SEL.year===y?' sel':''}"
-        onclick="selectYear('${b.branch}',${y});event.stopPropagation()">${y}</span>`).join('')}</div>`;
-    d.onclick = () => selectYear(b.branch, b.years[b.years.length-1]);
-    el.appendChild(d);
-  });
-  // prefill control fields
-  if (SEL.branch) {
-    $('f_parent').value = SEL.branch; $('f_year').value = SEL.year ?? '';
-    $('i_branch').value = SEL.branch; $('r_branch').value = SEL.branch;
-  }
-}
-
-async function selectYear(branch, year) {
-  SEL = {branch, year};
-  renderBranches();
-  $('transcript-title').textContent = `Transcript — ${branch} · year ${year}`;
-  $('mlabel').textContent = `${branch} y${year}`;
-  const data = await api(`/api/year?b=${branch}&y=${year}`);
-  renderEvents(branch, data.events);
-  renderMetrics(data.metrics);
-}
-
-const EDITABLE = new Set(['say','propose','convo','reject','give','take','attack']);
-function renderEvents(branch, events) {
-  const el = $('events'); el.innerHTML='';
-  if (!events.length) { el.innerHTML='<div class="meta">no events</div>'; return; }
-  events.forEach(e => {
-    const d = document.createElement('div');
-    d.className = 'ev ' + e.kind + (e.edited?' edited':'');
-    const who = e.who || '';
-    const editbtn = EDITABLE.has(e.kind)
-      ? `<button class="edit" title="edit these words" onclick="editEvent('${branch}','${e.eid}')">&#9998;</button>` : '';
-    d.innerHTML = `<div class="k">${e.kind}</div>
-      <div class="body" style="flex:1"><span class="who">${who}</span>
-      ${e.text? ': '+escapeHtml(e.text):''}</div>${editbtn}`;
-    el.appendChild(d);
+function renderYears(){
+  const el = $('years'); el.innerHTML = '';
+  YEARS.forEach(y => {
+    const b = document.createElement('button');
+    b.className = 'yr' + (y===SEL && !ES ? ' sel' : '');
+    b.textContent = 'Year ' + y;
+    b.onclick = () => { if (ES) toggleLive(); selectYear(y); };
+    el.appendChild(b);
   });
 }
 
-function renderMetrics(m) {
-  const order = ['year','branch','population','ever_lived','births','deaths_total',
-    'deaths_starvation','deaths_natural','food_total','food_gini','mean_age',
-    'max_generation','mean_openness','mean_conscientiousness','mean_extraversion',
-    'mean_agreeableness','mean_neuroticism','mean_intelligence_tokens','mean_memory_tokens'];
-  const t = $('metrics'); t.innerHTML='';
-  order.forEach(k => { if (k in m) {
-    const tr=document.createElement('tr');
-    tr.innerHTML=`<td>${k.replace('mean_','µ ').replace(/_/g,' ')}</td><td>${m[k]}</td>`;
+async function selectYear(y){
+  SEL = y; renderYears();
+  $('ttitle').textContent = 'Transcript — year ' + y;
+  $('slabel').textContent = 'year ' + y;
+  const d = await api(`/api/year?b=main&y=${y}`);
+  renderEvents(d.events || []);
+  renderStats(d.metrics || {});
+}
+
+function renderEvents(events){
+  const el = $('events'); el.innerHTML = '';
+  const shown = events.filter(e => !HIDE.has(e.kind));
+  if (!shown.length){ el.innerHTML = '<div class="empty">A quiet year — nothing of note.</div>'; return; }
+  shown.forEach(e => el.appendChild(evRow(e)));
+}
+
+function evRow(e){
+  const d = document.createElement('div');
+  d.className = 'ev ' + (e.kind||'');
+  d.innerHTML = `<div class="k">${e.kind||''}</div><div style="flex:1">`+
+    `<span class="who">${e.who||''}</span>${e.text? ': '+escapeHtml(e.text) : ''}</div>`;
+  return d;
+}
+
+const STAT_ROWS = [
+  ['__h','POPULATION'],
+  ['population','people'], ['ever_lived','ever lived'], ['births','births'],
+  ['max_generation','generations'], ['mean_age','avg age'],
+  ['__h','DEATHS'],
+  ['deaths_total','total'], ['deaths_starvation','• starvation','sub'],
+  ['deaths_combat','• combat','sub'], ['deaths_natural','• old age','sub'],
+  ['__h','RESOURCES'],
+  ['food_total','food held'], ['food_gini','food Gini (inequality)'],
+  ['__h','AVERAGES'],
+  ['mean_strength','strength'], ['mean_hp','HP'],
+  ['mean_openness','openness'], ['mean_conscientiousness','conscientiousness'],
+  ['mean_extraversion','extraversion'], ['mean_agreeableness','agreeableness'],
+  ['mean_neuroticism','neuroticism'],
+  ['mean_intelligence_tokens','intelligence'], ['mean_memory_tokens','memory'],
+];
+
+function renderStats(m){
+  const t = $('stats'); t.innerHTML = '';
+  STAT_ROWS.forEach(([key,label,cls]) => {
+    if (key === '__h'){
+      const tr = document.createElement('tr'); tr.className='head';
+      tr.innerHTML = `<td colspan="2">${label}</td>`; t.appendChild(tr); return;
+    }
+    if (!(key in m)) return;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td${cls?' class="'+cls+'"':''}>${label}</td><td>${m[key]}</td>`;
     t.appendChild(tr);
-  }});
-}
-
-async function editEvent(branch, eid) {
-  const txt = prompt('Rewrite this utterance (history will be rewritten on this branch):');
-  if (txt===null) return;
-  const r = await post('/api/edit', {branch, eid, text:txt});
-  if (r.error) return setMsg(r.error, true);
-  setMsg(`edited ${eid} (${r.patched} locations). Replay '${branch}' to let it flow forward.`);
-  selectYear(SEL.branch, SEL.year);
-  $('r_branch').value = branch;
-}
-
-async function doFork() {
-  const r = await post('/api/fork', {parent:$('f_parent').value,
-    year:Number($('f_year').value), name:$('f_name').value||null});
-  if (r.error) return setMsg(r.error, true);
-  setMsg(`forked '${r.branch}'`); await loadTree(true);
-  $('i_branch').value=r.branch; $('r_branch').value=r.branch;
-}
-async function doInject() {
-  const ratio = $('i_ratio').value!==''?Number($('i_ratio').value):null;
-  const r = await post('/api/inject', {branch:$('i_branch').value, ratio,
-    narrate:$('i_note').value||null});
-  if (r.error) return setMsg(r.error, true);
-  setMsg('injected: '+(r.changes||[]).join(', ')); await loadTree(true);
-}
-async function doReplay() {
-  setMsg('replaying…');
-  const r = await post('/api/replay', {branch:$('r_branch').value,
-    years:Number($('r_years').value)});
-  if (r.error) return setMsg(r.error, true);
-  setMsg('replayed.'); await loadTree(true);
-  selectYear($('r_branch').value, lastYear($('r_branch').value));
-}
-async function doDiff() {
-  const r = await api(`/api/diff?a=${$('d_a').value}&ya=${$('d_ya').value}`+
-                      `&b=${$('d_b').value}&yb=${$('d_yb').value}`);
-  $('diffout').textContent = JSON.stringify(r, null, 1);
-}
-
-function lastYear(b){ const x=TREE.branches.find(z=>z.branch===b); return x?x.years[x.years.length-1]:0; }
-function setMsg(s, bad){ const m=$('msg'); m.textContent=s; m.style.color=bad?'var(--bad)':'var(--good)'; }
-function escapeHtml(s){ return s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
-
-async function drawChart() {
-  // population vs year for each branch
-  const series = await Promise.all(TREE.branches.map(b=>api(`/api/series?b=${b.branch}`)));
-  const all = series.flatMap(s=>s.series);
-  if (!all.length) return;
-  const maxY = Math.max(...all.map(p=>p.year), 1);
-  const maxP = Math.max(...all.map(p=>p.population), 1);
-  const W=300,H=120,pad=4;
-  const x=y=>pad+(y/maxY)*(W-2*pad);
-  const yv=p=>H-pad-(p/maxP)*(H-2*pad);
-  let svg='';
-  series.forEach((s,i)=>{
-    const col=palette[i%palette.length];
-    const pts=s.series.map(p=>`${x(p.year).toFixed(1)},${yv(p.population).toFixed(1)}`).join(' ');
-    svg+=`<polyline fill="none" stroke="${col}" stroke-width="1.5" points="${pts}"/>`;
   });
-  $('chart').innerHTML = svg;
-  $('chartlegend').innerHTML = series.map((s,i)=>
-    `<span style="color:${palette[i%palette.length]}">■ ${s.branch}</span>`).join('  ');
+  if (!t.children.length) t.innerHTML = '<tr><td class="empty">no data</td></tr>';
 }
 
-// --- live turn-by-turn feed (SSE) ---
-let ES = null;
+// --- live turn-by-turn feed (optional) ---
 function toggleLive(){
   const btn = $('livebtn');
   if (ES){ ES.close(); ES = null; btn.classList.remove('on'); btn.textContent = '● Live';
-    if (SEL.branch) selectYear(SEL.branch, SEL.year); else $('events').innerHTML='';
-    return; }
-  $('transcript-title').textContent = 'Live feed — streaming as the run happens';
-  $('mlabel').textContent = 'LIVE'; $('events').innerHTML = '';
+    if (SEL!==null) selectYear(SEL); loadYears(); return; }
+  $('ttitle').textContent = 'Live — streaming as the run happens';
+  $('slabel').textContent = 'live'; $('events').innerHTML = '';
+  renderYears();
   ES = new EventSource('/api/live');
-  ES.onmessage = (e) => { let ev; try { ev = JSON.parse(e.data); } catch(_) { return; }
-    appendLiveEvent(ev); };
+  ES.onmessage = ev => { let e; try { e = JSON.parse(ev.data); } catch(_){ return; }
+    if (HIDE.has(e.kind)) return;
+    const el = $('events'); el.appendChild(evRow(e));
+    while (el.children.length > 600) el.removeChild(el.firstChild);
+    $('center').scrollTop = $('center').scrollHeight; };
   btn.classList.add('on'); btn.textContent = '● LIVE';
-}
-function appendLiveEvent(e){
-  const el = $('events');
-  const d = document.createElement('div');
-  d.className = 'ev ' + (e.kind || '');
-  d.innerHTML = `<div class="k">${e.kind||''}</div><div class="body" style="flex:1">`+
-    `<span class="who">${e.who||''}</span>${e.text? ': '+escapeHtml(e.text) : ''}</div>`;
-  el.appendChild(d);
-  while (el.children.length > 500) el.removeChild(el.firstChild);
-  const c = document.getElementById('center'); c.scrollTop = c.scrollHeight;
 }
 
 const u = new URLSearchParams(location.search);
 $('runname').textContent = '· ' + (u.get('run')||'');
-loadTree();
-setInterval(()=>{}, 0);
+loadYears();
+setInterval(() => { if (!ES) loadYears(true); }, 3000);  // pick up new years during a run
 </script>
 </body>
 </html>
