@@ -11,15 +11,25 @@
   body { margin:0; font:13px/1.5 ui-monospace,Menlo,Consolas,monospace; background:var(--bg); color:var(--ink); }
   header { padding:9px 16px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
   header b { color:var(--accent); font-size:16px; letter-spacing:1px; }
-  select, input, button { font:inherit; background:#0f0d0a; color:var(--ink); border:1px solid var(--line); border-radius:5px; padding:4px 8px; }
-  /* dark, mono-vibe dropdowns: kill the native chrome, draw our own caret */
-  select { appearance:none; -webkit-appearance:none; padding-right:26px; cursor:pointer;
-           background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M0 0l5 6 5-6z' fill='%239a8f7d'/></svg>");
-           background-repeat:no-repeat; background-position:right 9px center; transition:border-color .12s; }
-  select:hover { border-color:var(--dim); }
-  select:focus { outline:none; border-color:var(--accent); }
-  select:disabled { opacity:.45; cursor:default; }
-  select option { background:var(--panel); color:var(--ink); }
+  input, button, .dd-btn { font:inherit; background:#0f0d0a; color:var(--ink); border:1px solid var(--line); border-radius:5px; padding:4px 8px; }
+  /* Custom dark dropdowns. Native <select> popups are OS-rendered (white) and can't be
+     themed, so we roll our own button + menu to match the mono UI. */
+  .dd { position:relative; display:inline-block; }
+  .dd-btn { display:inline-flex; align-items:center; gap:8px; cursor:pointer; min-width:88px; max-width:260px; transition:border-color .12s; }
+  .dd-btn .lbl { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .dd-btn:hover { border-color:var(--dim); }
+  .dd.open .dd-btn { border-color:var(--accent); }
+  .dd-caret { margin-left:auto; color:var(--dim); font-size:9px; transition:transform .12s; }
+  .dd.open .dd-caret { transform:rotate(180deg); }
+  .dd-menu { position:absolute; top:calc(100% + 4px); left:0; min-width:100%; z-index:60;
+             background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:4px;
+             max-height:320px; overflow:auto; box-shadow:0 10px 30px rgba(0,0,0,.55); }
+  .dd-menu.hidden { display:none; }
+  .dd-opt { padding:5px 10px; border-radius:4px; white-space:nowrap; cursor:pointer; color:var(--ink); }
+  .dd-opt:hover { background:#0f0d0a; }
+  .dd-opt.sel { background:var(--accent); color:#14110e; font-weight:700; }
+  .dd-opt.disabled { color:var(--dim); cursor:default; }
+  .dd-opt.disabled:hover { background:none; }
   input { width:64px; } input.name { width:120px; }
   button { cursor:pointer; } button:hover { border-color:var(--dim); }
   button.go { background:var(--accent); color:#14110e; border-color:var(--accent); font-weight:700; }
@@ -62,13 +72,13 @@
 <body>
 <header>
   <b>REDOLAND</b>
-  <select id="runsel" onchange="selectRun(this.value)"></select>
-  <select id="brsel" onchange="selectBranch(this.value)"></select>
+  <div class="dd" id="runsel" data-ph="run"></div>
+  <div class="dd" id="brsel" data-ph="branch"></div>
   <button class="go" id="runbtn" onclick="toggleRun()">▶ Start</button>
   <span class="hint">creating &amp; forking worldlines is done by asking the AI</span>
   <div class="right">
-    <label for="activesel">running</label>
-    <select id="activesel" onchange="jumpActive(this.value)" title="jump to a branch that is running right now"></select>
+    <label>running</label>
+    <div class="dd" id="activesel" title="jump to a branch that is running right now"></div>
     <span class="status" id="status">all worlds are paused</span>
   </div>
 </header>
@@ -88,14 +98,37 @@ const esc = s => (s||'').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&g
 const HIDE = new Set(['pass','compaction','under_attack']);
 // SEL = selected year; STICK = follow the latest (auto-updating) year. The year tabs
 // and the selected year's transcript auto-refresh by polling — no live stream.
-let RUN=null, BR=null, YEARS=[], SEL=null, STICK=true, TAB='sum', LAST_KEY='';
+let RUN=null, BR=null, RUNS=[], YEARS=[], SEL=null, STICK=true, TAB='sum', LAST_KEY='';
+
+// -- custom dropdown (button + themed menu; replaces native <select>) --
+function closeAllDD(){ document.querySelectorAll('.dd.open').forEach(d=>{ d.classList.remove('open');
+  const m=d.querySelector('.dd-menu'); if(m) m.classList.add('hidden'); }); }
+document.addEventListener('click', closeAllDD);
+// items: [{value,label,disabled}]. buttonLabel overrides the shown label (else the
+// selected item's label, else the data-ph placeholder).
+function renderDD(hostId, items, current, onpick, buttonLabel){
+  const host=$(hostId); if(!host) return;
+  if(!items.length) items=[{value:'',label:'— none —',disabled:true}];
+  const cur=items.find(i=>i.value===current);
+  const label = buttonLabel!=null ? buttonLabel : (cur? cur.label : (host.dataset.ph||'—'));
+  host.innerHTML =
+    `<button class="dd-btn" type="button"><span class="lbl">${esc(label)}</span><span class="dd-caret">▾</span></button>`+
+    `<div class="dd-menu hidden">`+items.map(i=>
+      `<div class="dd-opt${i.value===current?' sel':''}${i.disabled?' disabled':''}" data-v="${esc(i.value)}">${esc(i.label)}</div>`
+    ).join('')+`</div>`;
+  const btn=host.querySelector('.dd-btn'), menu=host.querySelector('.dd-menu');
+  btn.onclick=(e)=>{ e.stopPropagation(); const open=host.classList.contains('open'); closeAllDD();
+    if(!open){ host.classList.add('open'); menu.classList.remove('hidden'); } };
+  menu.querySelectorAll('.dd-opt').forEach(opt=>{ if(opt.classList.contains('disabled')) return;
+    opt.onclick=(e)=>{ e.stopPropagation(); closeAllDD(); onpick(opt.dataset.v); }; });
+}
 
 async function loadRuns(){
-  const d = await api('/api/runs'); const sel = $('runsel');
-  sel.innerHTML = (d.runs||[]).map(r=>`<option ${r===RUN?'selected':''}>${r}</option>`).join('');
-  if (!RUN && d.runs.length) selectRun(d.runs[0]);
+  const d = await api('/api/runs'); RUNS = d.runs||[]; renderRunsDD();
+  if (!RUN && RUNS.length) selectRun(RUNS[0]);
 }
-async function selectRun(r){ RUN=r; $('runsel').value=r; BR=null; SEL=null; STICK=true; await refresh(); }
+function renderRunsDD(){ renderDD('runsel', RUNS.map(r=>({value:r,label:r})), RUN, selectRun); }
+async function selectRun(r){ RUN=r; renderRunsDD(); BR=null; SEL=null; STICK=true; await refresh(); }
 function selectBranch(b){ BR=b; SEL=null; STICK=true; refresh(); }
 
 // poll the tree (years incl. the in-progress one) + the selected year's transcript
@@ -103,8 +136,8 @@ async function refresh(){
   if (!RUN) return;
   const t = await api('/api/tree?run='+encodeURIComponent(RUN));
   const branches = t.branches||[];
-  $('brsel').innerHTML = branches.map(b=>`<option ${b.branch===BR?'selected':''}>${b.branch}</option>`).join('');
   if (!BR && branches.length) BR = branches[0].branch;
+  renderDD('brsel', branches.map(b=>({value:b.branch,label:b.branch})), BR, selectBranch);
   const cur = branches.find(b=>b.branch===BR) || branches[0];
   YEARS = cur ? cur.years : [];
   const latest = YEARS.length ? YEARS[YEARS.length-1] : null;
@@ -206,20 +239,15 @@ function updateRunBtn(){ const btn=$('runbtn'); const on=isActive(RUN,BR);
 // jump straight to a branch that is running (sets the world + branch, then refreshes)
 async function jumpActive(v){
   if(!v) return; const [run,branch]=v.split(SEPC);
-  RUN=run; BR=branch; SEL=null; STICK=true; $('runsel').value=run; await refresh();
+  RUN=run; BR=branch; SEL=null; STICK=true; renderRunsDD(); await refresh();
 }
 // the top-right picker lists ONLY what is running now; pausing a branch drops it
 async function pollActive(){
   const d = await api('/api/active'); ACTIVE = d.active||[];
-  const sel=$('activesel');
-  const head = `<option value="">${ACTIVE.length? ACTIVE.length+' running' : 'none running'}</option>`;
   const here = `${RUN}${SEPC}${BR}`;
-  sel.innerHTML = head + ACTIVE.map(a=>{
-    const v=`${a.run}${SEPC}${a.branch}`;
-    const warn = a.phase==='error' ? ' ⚠' : '';
-    const yr = a.year? ' · y'+a.year : '';
-    return `<option value="${esc(v)}" ${v===here?'selected':''}>${esc(a.run)} / ${esc(a.branch)}${yr}${warn}</option>`;
-  }).join('');
+  const items = ACTIVE.map(a=>({ value:`${a.run}${SEPC}${a.branch}`,
+    label:`${a.run} / ${a.branch}${a.year? ' · y'+a.year : ''}${a.phase==='error'? ' ⚠' : ''}` }));
+  renderDD('activesel', items, here, jumpActive, ACTIVE.length? `${ACTIVE.length} running` : 'none running');
   const st=$('status'); const err=ACTIVE.find(a=>a.phase==='error');
   if(err){ st.className='status'; st.textContent='error: '+(err.error||'').slice(0,60); }
   else if(ACTIVE.length){ st.className='status run'; st.innerHTML=`● <b>${ACTIVE.length}</b> branch${ACTIVE.length>1?'es':''} running`; }
@@ -231,7 +259,8 @@ async function pollActive(){
 document.addEventListener('keydown', e=>{
   if(e.key!=='ArrowUp' && e.key!=='ArrowDown') return;
   const tag=(document.activeElement&&document.activeElement.tagName)||'';
-  if(tag==='INPUT'||tag==='SELECT'||tag==='TEXTAREA') return;
+  if(tag==='INPUT'||tag==='TEXTAREA') return;
+  if(document.querySelector('.dd.open')) return;   // a dropdown is open — let it be
   if(!YEARS.length) return;
   e.preventDefault();
   let i = SEL==null ? YEARS.length-1 : YEARS.indexOf(SEL);
