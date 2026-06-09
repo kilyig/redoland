@@ -36,6 +36,24 @@
   button.go.paused { background:transparent; color:var(--accent); }
   .sep { width:1px; align-self:stretch; background:var(--line); margin:0 2px; }
   .hint { color:var(--dim); font-size:11px; }
+  .info { border:none; background:none; color:var(--dim); cursor:pointer; font-size:15px; line-height:1; padding:0 2px; }
+  .info:hover { color:var(--accent); }
+  /* info modal */
+  .modal { position:fixed; inset:0; background:rgba(0,0,0,.62); display:flex; align-items:center; justify-content:center; z-index:200; }
+  .modal.hidden { display:none; }
+  .modal-box { background:var(--panel); border:1px solid var(--line); border-radius:10px; width:90%; max-width:640px; max-height:84vh; overflow:auto; box-shadow:0 22px 64px rgba(0,0,0,.6); }
+  .modal-h { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:14px 18px; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--panel); }
+  .modal-h h2 { margin:0; color:var(--accent); font-size:14px; letter-spacing:1px; text-transform:uppercase; }
+  .modal .x { border:none; background:none; color:var(--dim); cursor:pointer; font-size:14px; }
+  .modal .x:hover { color:var(--ink); }
+  .modal-body { padding:14px 18px 18px; line-height:1.62; }
+  .modal-body p { margin:0 0 11px; }
+  .modal-body h3 { color:var(--dim); text-transform:uppercase; font-size:10px; letter-spacing:1.2px; margin:17px 0 7px; }
+  .modal-body code { background:#0f0d0a; border:1px solid var(--line); border-radius:4px; padding:1px 5px; }
+  .modal-body a { color:var(--blue); }
+  .modal-body table.cmds { width:100%; border-collapse:collapse; }
+  .modal-body table.cmds td { padding:4px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  .modal-body table.cmds td:first-child { white-space:nowrap; color:var(--accent); width:1%; padding-right:14px; }
   .right { margin-left:auto; display:flex; gap:10px; align-items:center; }
   .right label { color:var(--dim); font-size:10px; text-transform:uppercase; letter-spacing:1px; }
   .status { color:var(--dim); }
@@ -75,13 +93,53 @@
   <div class="dd" id="runsel" data-ph="run"></div>
   <div class="dd" id="brsel" data-ph="branch"></div>
   <button class="go" id="runbtn" onclick="toggleRun()">▶ Start</button>
-  <span class="hint">creating &amp; forking worldlines is done by asking the AI</span>
+  <span class="hint">worlds are created &amp; forked from the CLI</span>
+  <button class="info" id="infobtn" onclick="openInfo()" title="how to interact with Redoland" aria-label="how to interact with Redoland">&#9432;</button>
   <div class="right">
     <label id="runlabel" style="display:none">running</label>
     <div class="dd" id="activesel" style="display:none" title="jump to a branch that is running right now"></div>
     <span class="status" id="status">all worlds are paused</span>
   </div>
 </header>
+<div id="infomodal" class="modal hidden" onclick="if(event.target===this)closeInfo()">
+  <div class="modal-box">
+    <div class="modal-h"><h2>Working with Redoland</h2><button class="x" onclick="closeInfo()" aria-label="close">&#10005;</button></div>
+    <div class="modal-body">
+      <p>This <b>web UI is read-only</b> — it shows transcripts and stats and lets you
+      <b>Start / Pause</b> a branch. Everything that <i>changes</i> a world — creating it,
+      forking a worldline, injecting an event, inspecting deep state — is done from the
+      <b>command line</b>, which is currently the only tool for that.</p>
+      <p>The CLI is built to be <b>driven by an AI agent</b> (e.g. Claude Code): every
+      command is self-documenting, so you can hand the agent a goal and let it run the
+      commands for you — that's the intended workflow. Run from the repo root with the
+      project venv:</p>
+      <p><code>python -m redoland &lt;command&gt; -h</code> — prints the mental model and
+      per-command help (the inject schema and a worked example included).</p>
+
+      <h3>Core commands</h3>
+      <table class="cmds">
+        <tr><td>init</td><td>create a new village — <code>--premise "…"</code> sets the stage</td></tr>
+        <tr><td>run</td><td>advance a branch forward (one commit per agent action)</td></tr>
+        <tr><td>timeline</td><td>per-action commit history — these are the fork points</td></tr>
+        <tr><td>fork</td><td>branch a new worldline from <i>any</i> action</td></tr>
+        <tr><td>inject</td><td>inject an event (a state change + public explanation)</td></tr>
+        <tr><td>diff</td><td>compare two branch / year snapshots</td></tr>
+        <tr><td>state · metrics</td><td>living roster + each agent's stats, or full JSON metrics</td></tr>
+        <tr><td>serve</td><td>this read-only web UI</td></tr>
+      </table>
+
+      <h3>The mental model</h3>
+      <p>A <b>run</b> is a village = its own git repo. <b>Every agent action is a commit</b>;
+      a <b>worldline</b> is a git <b>branch</b>. Rewind to any moment, change something, run it
+      forward, and compare how history diverges — that's the whole point.</p>
+
+      <h3>Documentation</h3>
+      <p><a href="https://github.com/kilyig/redoland/blob/main/AGENTS.md" target="_blank" rel="noopener">AGENTS.md — operator guide</a>
+      &nbsp;·&nbsp;
+      <a href="https://github.com/kilyig/redoland" target="_blank" rel="noopener">repository</a></p>
+    </div>
+  </div>
+</div>
 <div class="wrap">
   <div class="col" id="left"><h3>Years</h3><div id="years"></div></div>
   <div class="col" id="center"><h3 id="ttitle">Transcript</h3><div id="events"></div></div>
@@ -222,6 +280,11 @@ function renderDist(dist){
 function showTab(t){ TAB=t; $('sum').style.display=t==='sum'?'':'none'; $('dist').style.display=t==='dist'?'':'none';
   $('tabSum').className=t==='sum'?'on':''; $('tabDist').className=t==='dist'?'on':''; }
 
+// -- info modal (CLI / how-to) --
+function openInfo(){ $('infomodal').classList.remove('hidden'); }
+function closeInfo(){ $('infomodal').classList.add('hidden'); }
+document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeInfo(); });
+
 // -- worldline actions --
 let ACTIVE=[];                              // branches running right now (across all worlds)
 const SEPC='';
@@ -254,9 +317,9 @@ async function pollActive(){
     label:`${a.run} / ${a.branch}${a.year? ' · y'+a.year : ''}${a.phase==='error'? ' ⚠' : ''}` }));
   if(running) renderDD('activesel', items, here, jumpActive, `${ACTIVE.length} running`);
   const st=$('status'); const err=ACTIVE.find(a=>a.phase==='error');
-  if(err){ st.className='status run'; st.textContent='error: '+(err.error||'').slice(0,60); }
-  else if(running){ st.className='status run'; st.innerHTML=`● <b>${ACTIVE.length}</b> branch${ACTIVE.length>1?'es':''} running`; }
-  else { st.className='status'; st.textContent='all worlds are paused'; }
+  if(err){ st.style.display=''; st.className='status run'; st.textContent='error: '+(err.error||'').slice(0,60); }
+  else if(running){ st.style.display='none'; }   // the picker already says what's running
+  else { st.style.display=''; st.className='status'; st.textContent='all worlds are paused'; }
   updateRunBtn();
 }
 
