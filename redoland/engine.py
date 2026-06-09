@@ -63,9 +63,12 @@ class Engine:
     def step(self):
         """Advance the simulation by ONE atomic step and return a short label:
         'setup' (a year opens, food appears), 'action' (one agent took their move),
-        'quiescent' (no one else wants to act), or 'year_end' (eat / age / mortality
-        resolved). The world's run cursor makes this resumable: a fork taken after
-        any single step continues from exactly that point."""
+        'talk'/'talk_end' (one utterance in a group conversation / the conversation
+        closing), 'fight'/'fight_end' (one muster pass or blow round / the fight
+        resolving), 'quiescent' (no one else wants to act), or 'year_end' (eat / age /
+        mortality resolved). The world's run cursor makes this resumable: a fork taken
+        after any single step — including mid-conversation or mid-fight — continues from
+        exactly that point, because the talk/fight sub-state is part of the cursor."""
         w = self.w
         cur = w.cursor
         phase = cur.get("phase", "year_start")
@@ -83,9 +86,25 @@ class Engine:
             if actor is None:
                 cur["phase"] = "year_end"
                 return "quiescent"
-            self._initiate(actor)
+            # A talk/attack move may hand control to the talk/fight state machine
+            # (phase becomes 'talk'/'fight'); instant moves resolve inline here.
+            self._initiate(actor, stepwise=True)
             cur["last"], cur["steps"] = actor.id, cur["steps"] + 1
             return "action"
+        if phase == "talk":
+            t = cur.get("talk")
+            if t is None or not self._talk_step(t):     # one utterance, or the talk ends
+                cur.pop("talk", None)
+                cur["phase"] = "scramble"
+                return "talk_end"
+            return "talk"
+        if phase == "fight":
+            f = cur.get("fight")
+            if f is None or not self._fight_step(f):     # one muster/blow, or it resolves
+                cur.pop("fight", None)
+                cur["phase"] = "scramble"
+                return "fight_end"
+            return "fight"
         if phase == "year_end":
             self._year_end()
             self._compaction()
@@ -129,9 +148,12 @@ class Engine:
                 actor = la
         return actor
 
-    def _initiate(self, actor, action=None):
+    def _initiate(self, actor, action=None, stepwise=False):
         # action=None: the agent chooses (normal scramble). Otherwise the action is
         # FORCED (used by inject to script a specific agent move into the timeline).
+        # stepwise=True (the scramble loop): talk/attack hand off to the talk/fight
+        # state machine, so each utterance/blow becomes its own resumable commit.
+        # stepwise=False (inject / direct calls): talk/attack play out atomically.
         w = self.w
         if action is None:
             action = decide.choose_action(w, actor)
@@ -155,11 +177,26 @@ class Engine:
         elif kind == "child":
             self._convo_chunk(actor, action)
         elif kind == "talk":
-            self._talk_chunk(actor, action)
+            t = self._enter_talk(actor, action)
+            if t is None:
+                return
+            if stepwise:
+                w.cursor["talk"] = t                  # the state machine drives it
+                w.cursor["phase"] = "talk"
+            else:
+                while self._talk_step(t):             # play it out atomically
+                    pass
         elif kind == "attack":
             tgt = w.agents.get(action.get("target"))
             if tgt and tgt.alive and tgt.id != actor.id:
-                self._fight_chunk(actor, tgt, int(action.get("demand", tgt.food) or 0))
+                demand = int(action.get("demand", tgt.food) or 0)
+                f = self._enter_fight(actor, tgt, demand)
+                if stepwise:
+                    w.cursor["fight"] = f             # the state machine drives it
+                    w.cursor["phase"] = "fight"
+                else:
+                    while self._fight_step(f):        # play it out atomically
+                        pass
         else:
             w.record("pass", actor.id, "", audience=[actor.id])
 
@@ -186,8 +223,15 @@ class Engine:
             w.record("reject", partner.id, f"{partner.name} declines.",
                      audience=grp, phase="convo")
 
-    # -- free-form group talk --------------------------------------------- #
-    def _talk_chunk(self, initiator, action):
+    # -- free-form group talk (a resumable, per-utterance state machine) --- #
+    # The conversation is driven one utterance at a time. `_enter_talk` records the
+    # opener and returns a small JSON-serializable state dict; `_talk_step` produces
+    # exactly one utterance (or ends the talk). The scramble loop parks this dict in
+    # `world.cursor["talk"]`, so each utterance is its own commit and a fork taken
+    # mid-conversation resumes the talk exactly where it left off.
+    def _enter_talk(self, initiator, action):
+        """Validate the group and record the 'gathers to talk' opener. Returns the talk
+        state dict, or None if fewer than two live participants (nothing happens)."""
         w = self.w
         ids = action.get("partners") or ([action["partner"]] if action.get("partner") else [])
         group, seen = [initiator], {initiator.id}
@@ -197,82 +241,130 @@ class Engine:
                 group.append(o)
                 seen.add(o.id)
         if len(group) < 2:
-            return
-        gids = [g.id for g in group]
+            return None
+        gids = [g.id for g in group]                  # FIXED roster: the audience key
         others_names = ", ".join(g.name for g in group[1:])
         w.record("convo", initiator.id, f"{initiator.name} gathers {others_names} to talk.",
                  audience=gids, phase="convo")
+        return {"group": gids, "initiator": initiator.id,
+                "last": None, "guard": 0, "opened": False}
 
-        def speak(agent):
-            others = [g for g in group if g.id != agent.id]
-            text = (decide.say(w, agent, others, self._tail(w, gids)) or "").strip()
-            if text:
-                w.record("say", agent.id, text, audience=gids, phase="convo")
-            return text
+    def _talk_step(self, t):
+        """Produce ONE utterance (or end the talk). Returns True while the conversation
+        continues, False once it has closed."""
+        w = self.w
+        gids = t["group"]                             # canonical roster (audience key)
+        alive = [w.agents[i] for i in gids if i in w.agents and w.agents[i].alive]
+        if len(alive) < 2:                            # the group collapsed (e.g. deaths)
+            return False
+        if not t["opened"]:                           # the initiator speaks first
+            t["opened"] = True
+            initiator = w.agents.get(t["initiator"])
+            if initiator and initiator.alive:
+                t["last"] = initiator.id if self._say(initiator, alive, gids) else None
+            return True
+        if t["guard"] >= int(w.params.convo_safety_cap):
+            return False
+        t["guard"] += 1
+        history = self._tail(w, gids)
+        willing = [g for g in alive if g.id != t["last"]
+                   and decide.want_to_speak(w, g, [o for o in alive if o.id != g.id], history)]
+        if not willing:
+            return False
+        speaker = w.rng.choice(willing)
+        self._say(speaker, alive, gids)
+        t["last"] = speaker.id
+        return True
 
-        last = initiator.id if speak(initiator) else None
-        guard = 0
-        while guard < int(w.params.convo_safety_cap):
-            guard += 1
-            history = self._tail(w, gids)
-            willing = [g for g in group if g.id != last
-                       and decide.want_to_speak(w, g, [o for o in group if o.id != g.id], history)]
-            if not willing:
-                break
-            speaker = w.rng.choice(willing)
-            speak(speaker)
-            last = speaker.id
+    def _say(self, agent, alive, gids):
+        others = [g for g in alive if g.id != agent.id]
+        text = (decide.say(self.w, agent, others, self._tail(self.w, gids)) or "").strip()
+        if text:
+            self.w.record("say", agent.id, text, audience=gids, phase="convo")
+        return text
+
+    def _talk_chunk(self, initiator, action):
+        """Atomic group talk (inject / direct/test calls): enter then run to the end."""
+        t = self._enter_talk(initiator, action)
+        if t is None:
+            return
+        while self._talk_step(t):
+            pass
 
     def _tail(self, w, gids):
         lines = [f"{e['who']}: {e['text']}" for e in w.year_events
                  if e.get("kind") == "say" and e.get("audience") == gids]
         return "\n".join(lines)
 
-    # -- fight ------------------------------------------------------------ #
-    def _fight_chunk(self, initiator, target, demand):
+    # -- fight (a resumable, per-step state machine) ---------------------- #
+    # A raid plays out as a sequence of steps: one muster pass at a time, then a single
+    # decide step (cancel / submit / press on), then one blow round at a time, then the
+    # outcome. `_enter_fight` records the opening and returns a JSON-serializable state
+    # dict; `_fight_step` advances it by one step. The scramble loop parks this dict in
+    # `world.cursor["fight"]`, so every muster pass and blow round is its own commit and
+    # a fork taken mid-fight resumes from exactly that point.
+    def _enter_fight(self, initiator, target, demand):
         w = self.w
-        p = w.params
-        attackers = {initiator.id}
-        defenders = {target.id}
         w.record("attack", "village", f"{initiator.name} moves to attack {target.name}.",
                  payload={"initiator": initiator.id, "target": target.id}, phase="fight")
         w.record("under_attack", target.id, f"You are under attack by {initiator.name}.",
                  audience=[target.id], phase="fight")
+        return {"initiator": initiator.id, "target": target.id, "demand": int(demand),
+                "attackers": [initiator.id], "defenders": [target.id],
+                "sub": "muster", "muster_pass": 0, "round": 0}
 
-        for _ in range(p.muster_passes_cap):
+    def _fight_step(self, f):
+        """Advance the fight by one step. Returns True while it continues, False once
+        the raid has resolved (cancel / submit / outcome)."""
+        w = self.w
+        p = w.params
+        attackers = {i for i in f["attackers"] if i in w.agents and w.agents[i].alive}
+        defenders = {i for i in f["defenders"] if i in w.agents and w.agents[i].alive}
+        initiator = w.agents.get(f["initiator"])
+        target = w.agents.get(f["target"])
+        if not attackers or not defenders:               # a side vanished — resolve now
+            return self._fight_outcome(f, attackers, defenders)
+        sub = f["sub"]
+
+        if sub == "muster":                              # one muster pass per step
             added = self._recruit(attackers, defenders, "attack")
             added = self._recruit(defenders, attackers, "defend") or added
-            if not added:
-                break
-        w.record("muster", "village",
-                 f"Attackers [{self._names(attackers)}] (str {self._roster_str(attackers)}) vs "
-                 f"defenders [{self._names(defenders)}] (str {self._roster_str(defenders)}).",
-                 payload={"attackers": sorted(attackers), "defenders": sorted(defenders)},
-                 phase="fight")
+            f["attackers"], f["defenders"] = sorted(attackers), sorted(defenders)
+            f["muster_pass"] += 1
+            if not added or f["muster_pass"] >= p.muster_passes_cap:
+                w.record("muster", "village",
+                         f"Attackers [{self._names(attackers)}] (str {self._roster_str(attackers)}) "
+                         f"vs defenders [{self._names(defenders)}] (str {self._roster_str(defenders)}).",
+                         payload={"attackers": sorted(attackers), "defenders": sorted(defenders)},
+                         phase="fight")
+                f["sub"] = "decide"
+            return True
 
-        if decide.attacker_decision(w, initiator, attackers, defenders) == "cancel":
-            w.record("cancel", "village",
-                     f"{initiator.name} thinks better of it and calls off the attack.",
-                     phase="fight")
-            return
-        if decide.defender_decision(w, target, attackers, defenders) == "submit":
-            if decide.attacker_on_submit(w, initiator, attackers, defenders) == "accept":
-                amt = min(demand, target.food)
-                target.food -= amt
-                initiator.food += amt
-                w.record("submit", "village",
-                         f"{target.name} submits; {initiator.name} takes {amt} food "
-                         f"without a fight.", payload={"amount": amt}, phase="fight")
-                return
-            w.record("presson", "village",
-                     f"{target.name} submits, but {initiator.name} attacks anyway.", phase="fight")
+        if sub == "decide":                              # cancel / submit / press on
+            if decide.attacker_decision(w, initiator, attackers, defenders) == "cancel":
+                w.record("cancel", "village",
+                         f"{initiator.name} thinks better of it and calls off the attack.",
+                         phase="fight")
+                return False
+            if decide.defender_decision(w, target, attackers, defenders) == "submit":
+                if decide.attacker_on_submit(w, initiator, attackers, defenders) == "accept":
+                    amt = min(f["demand"], target.food)
+                    target.food -= amt
+                    initiator.food += amt
+                    w.record("submit", "village",
+                             f"{target.name} submits; {initiator.name} takes {amt} food "
+                             f"without a fight.", payload={"amount": amt}, phase="fight")
+                    return False
+                w.record("presson", "village",
+                         f"{target.name} submits, but {initiator.name} attacks anyway.", phase="fight")
+            f["sub"] = "blows"
+            return True
 
-        fa, fd = set(attackers), set(defenders)
-        for _ in range(p.blow_rounds_cap):
-            fa = {i for i in fa if w.agents[i].alive}
-            fd = {i for i in fd if w.agents[i].alive}
-            if not fa or not fd:
-                break
+        if sub == "blows":                               # one blow round per step
+            if f["round"] >= p.blow_rounds_cap:
+                return self._fight_outcome(f, attackers, defenders)
+            f["round"] += 1
+            fa, fd = set(attackers), set(defenders)
             SA = sum(w.agents[i].strength for i in fa)
             SB = sum(w.agents[i].strength for i in fd)
             dmg_a = (p.c_lethality * SB) / max(1, len(fa))
@@ -298,19 +390,39 @@ class Engine:
                         side.discard(i)
                         w.record(d, "village",
                                  f"{a.name} {'flees' if d == 'flee' else 'yields'}.", phase="fight")
+            f["attackers"], f["defenders"] = sorted(fa), sorted(fd)
+            if not fa or not fd:
+                return self._fight_outcome(f, fa, fd)
+            return True
 
-        if fa and not fd:
-            amt = min(demand, max(0, target.food))
-            if target.id in w.agents:
+        return self._fight_outcome(f, attackers, defenders)
+
+    def _fight_outcome(self, f, attackers, defenders):
+        w = self.w
+        initiator = w.agents.get(f["initiator"])
+        target = w.agents.get(f["target"])
+        if attackers and not defenders:
+            amt = min(f["demand"], max(0, target.food)) if target else 0
+            if target and target.id in w.agents:
                 target.food = max(0, target.food - amt)
-            initiator.food += amt
+            if initiator:
+                initiator.food += amt
+            iname = initiator.name if initiator else "the attacker"
             w.record("outcome", "village",
-                     f"The attackers prevail; {initiator.name} takes {amt} food"
-                     f"{' from ' + target.name if target.alive else ' (loot)'}.",
+                     f"The attackers prevail; {iname} takes {amt} food"
+                     f"{' from ' + target.name if (target and target.alive) else ' (loot)'}.",
                      payload={"amount": amt}, phase="fight")
         else:
+            iname = initiator.name if initiator else "the attacker"
             w.record("outcome", "village",
-                     f"The defenders hold; {initiator.name}'s raid fails.", phase="fight")
+                     f"The defenders hold; {iname}'s raid fails.", phase="fight")
+        return False
+
+    def _fight_chunk(self, initiator, target, demand):
+        """Atomic fight (inject / direct/test calls): enter then run to the end."""
+        f = self._enter_fight(initiator, target, demand)
+        while self._fight_step(f):
+            pass
 
     def _recruit(self, side, opposing, label):
         w = self.w
