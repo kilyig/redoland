@@ -47,9 +47,13 @@ class Params:
     max_maternal_age: int = 45    # a woman can bear children only up to this age (men: no limit)
     repro_rounds: int = 2
     meeting_slots_per_agent: int = 10
-    # Group conversations have NO turn limit — they end only when no one in the
-    # group wants to speak. This is purely a runaway guard so a year cannot hang
-    # forever if the model never falls silent; it is not a conversational limit.
+    # Conversations end when no one wants to speak next. Two bounds back that up:
+    #   convo_turns_per_person — a SOFT cap: a conversation may run at most this many
+    #     utterances per participant (so cap = turns_per_person × group size); trims the
+    #     repetitive tail that sets in once the substance is said. Scales with group size
+    #     so larger groups get room for everyone to weigh in.
+    #   convo_safety_cap — a hard runaway guard so a year cannot hang forever.
+    convo_turns_per_person: int = 6
     convo_safety_cap: int = 200
     # cognition ranges (continuous heritable dials)
     int_min: int = 1024
@@ -75,7 +79,16 @@ class Params:
     desired_buffer: int = 2
     # api
     output_allowance: int = 1500
-    dead_food: str = "lost"       # "lost" | "pile" | "inherit"
+    # which Claude model drives this village's agents (via `claude -p --model`).
+    # Stored with the world so a run always thinks with the model it was created with.
+    model: str = "claude-haiku-4-5"
+    # dead food:
+    #   "lost"  — a dead person's uneaten food vanishes.
+    #   "pile"  — it returns to the commons. A year-end death (starvation/old age) rolls
+    #             into NEXT year's pile (this year's claiming window is closed). A mid-year
+    #             combat death drops into THIS year's pile (others can still grab it; it
+    #             spoils at the year reset) — after the victor loots the body first.
+    dead_food: str = "lost"       # "lost" | "pile"
 
     def to_dict(self) -> dict:
         return asdict(self)

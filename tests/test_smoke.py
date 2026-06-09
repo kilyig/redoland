@@ -146,6 +146,84 @@ def test_combat_resolves():
     check(w.agents["a002"].hp < 100 or "submit" in kinds, "defender takes damage or submits")
 
 
+def test_dead_food_yearend_to_next_pile():
+    """dead_food='pile': a year-end death's stores roll into NEXT year's pile."""
+    stub = StubModel(choice_fn=lambda p, r: 0, text_fn=lambda p: "")
+    w = World(Params(dead_food="pile", food_base=10, food_floor_ratio=0.0, ratio=0), RNG(1),
+              model_factory=lambda t: stub, randomize_choices=False)
+    w.year = 5
+    mkbody(w, "a001", "X", "male", food=7, health=2)
+    mkbody(w, "a002", "Y", "female", food=1, health=3)
+    eng = Engine(w)
+    eng._die(w.agents["a001"], "natural")            # a year-end death
+    check(w.next_pile_bonus == 7, "year-end death's food is banked for next year")
+    check(w.agents["a001"].food == 0, "dead agent's food is cleared")
+    w.year_events = []
+    eng._setup()                                     # opens year 6
+    check(w.pile == 10 + 7, "next year's pile = base food + the dead's stores")
+    check(w.next_pile_bonus == 0, "the carryover is consumed once spent")
+
+
+def test_combat_kill_loot_choice_and_spoils():
+    """A slain target: the victor LOOTS a chosen amount (not capped by the demand) and
+    the remainder drops into THIS year's pile (dead_food='pile')."""
+    def cf(prompt, responses):
+        p = prompt.lower()
+        if "press the attack or call it off" in p: return 0   # press
+        if "stand and fight, or submit" in p: return 0        # stand (fight to the death)
+        if "press on or flee" in p: return 0                  # press on
+        if "do you join" in p: return 1                       # decline to join
+        return 0
+    def tf(prompt):
+        if "invite" in prompt: return '{"invite":[]}'
+        if "how much do you take" in prompt.lower(): return "5"   # loot choice
+        return ""
+    stub = StubModel(choice_fn=cf, text_fn=tf)
+    w = World(Params(dead_food="pile"), RNG(5), model_factory=lambda t: stub,
+              randomize_choices=False); w.year = 1
+    mkbody(w, "a001", "Eron", "male", strength=100, hp=100, food=0)
+    mkbody(w, "a002", "Kesh", "female", strength=1, hp=1, food=8)   # frail -> dies fast
+    eng = Engine(w); w.year_events = []; w.pile = 0
+    eng._fight_chunk(w.agents["a001"], w.agents["a002"], demand=3)
+    check(not w.agents["a002"].alive, "the frail target is killed")
+    check(w.agents["a001"].food == 5, "victor takes the amount they CHOSE (5), not the demand (3)")
+    check(w.pile == 3, "the unlooted remainder (8-5) falls to this year's pile")
+    check(w.agents["a002"].food == 0, "nothing is left on the body")
+
+
+def test_convo_cap_scales_with_group():
+    """The soft cap (convo_turns_per_person × group size) ends a talk where everyone
+    always wants to speak, and larger groups get proportionally more turns."""
+    stub = StubModel(choice_fn=lambda p, r: 0,       # want_to_speak -> 'Speak now'
+                     text_fn=lambda p: "More." if "say your next line" in p.lower() else "")
+    def run(ids):
+        w = World(Params(convo_turns_per_person=2), RNG(1),
+                  model_factory=lambda t: stub, randomize_choices=False); w.year = 1
+        for i, gid in enumerate(ids):
+            mkbody(w, gid, "P" + gid, "male" if i % 2 else "female")
+        eng = Engine(w); w.year_events = []
+        eng._talk_chunk(w.agents[ids[0]], {"partners": ids[1:]})
+        return sum(1 for e in w.year_events if e["kind"] == "say")
+    two = run(["a001", "a002"])                       # cap = 2 × 2 = 4
+    three = run(["a001", "a002", "a003"])             # cap = 2 × 3 = 6
+    check(two <= 4 + 1, f"2-person talk is bounded by the soft cap (got {two})")
+    check(three <= 6 + 1, f"3-person talk is bounded by the soft cap (got {three})")
+    check(three > two, "larger groups get proportionally more turns")
+
+
+def test_model_persisted():
+    """A village remembers which Claude model it was created with (through git)."""
+    path = "/tmp/redoland_model"; shutil.rmtree(path, ignore_errors=True)
+    sim = Simulation.create(path, Params(founders=3, model="claude-sonnet-4-6"), seed=1,
+                            model_factory=lambda t: survival_stub(), randomize_choices=False)
+    w = sim.store.load_world("main")
+    check(w.params.model == "claude-sonnet-4-6", "model persists through the git round-trip")
+    from redoland.cli import make_model_factory
+    m = make_model_factory(w.params.model)(2000)
+    check(getattr(m, "_model", None) == "claude-sonnet-4-6", "factory builds agents on the stored model")
+    shutil.rmtree(path, ignore_errors=True)
+
+
 def test_birth_crossover():
     stub = StubModel(choice_fn=lambda p, r: 0,
                      text_fn=lambda p: "Be strong." if "note" in p.lower() else "")
@@ -426,7 +504,7 @@ def test_server_concurrent_jobs():
                           model_factory=mf, randomize_choices=False)
     srv.JOBS.clear()
     mgr = srv.Manager(base)
-    mgr.model_factory = lambda: mf                       # stub instead of claude -p
+    mgr.model_factory = lambda run=None: mf              # stub instead of claude -p
     r1 = mgr.start("w1", "main"); r2 = mgr.start("w2", "main")
     check(r1["ok"] and r2["ok"], "two branches of different worlds start concurrently")
     keys = {(a["run"], a["branch"]) for a in mgr.active()["active"]}
@@ -455,7 +533,10 @@ def test_distributions():
 if __name__ == "__main__":
     for fn in [test_model_parsing, test_engine_invariants, test_sole_actor_can_continue,
                test_determinism,
-               test_combat_resolves, test_birth_crossover, test_max_maternal_age, test_group_talk,
+               test_combat_resolves, test_dead_food_yearend_to_next_pile,
+               test_combat_kill_loot_choice_and_spoils, test_convo_cap_scales_with_group,
+               test_model_persisted,
+               test_birth_crossover, test_max_maternal_age, test_group_talk,
                test_stepwise_talk_resumable, test_stepwise_talk_persists_through_git,
                test_stepwise_fight_resumable,
                test_worldline_fork_inject_replay, test_fork_at_action_and_inject,

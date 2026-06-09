@@ -42,6 +42,10 @@ class World:
         self.next_eid = 0
         self.next_aid = 0
         self.year_events: list[dict] = []
+        # food held by those who died at year-end (natural/starvation) waiting to roll
+        # into NEXT year's pile (dead_food="pile"). Mid-year combat spoils go straight to
+        # the live pile instead, so they are claimable within the same year.
+        self.next_pile_bonus = 0
         self.event_sink = None                    # optional callable(ev) for live streaming
         # builds a per-agent LanguageModel given the agent's intelligence dial
         self.model_factory = model_factory

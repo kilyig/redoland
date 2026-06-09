@@ -37,7 +37,7 @@ change something, and watch how history diverges.
 
 | Command | What it does |
 |---|---|
-| `init <run> --founders 6 --seed 1 [--premise "…"] [--years N]` | create a new village (optionally **set the stage** with a premise) |
+| `init <run> --founders 6 --seed 1 [--premise "…"] [--model claude-sonnet-4-6] [--years N]` | create a new village (**set the stage** with a premise; pick the **model** it thinks with — stored with the run) |
 | `run <run> --branch B --years N` | advance a branch N years (1 commit per action) |
 | `timeline <run> --branch B [--n 40]` | per-action commit history → **fork points** |
 | `state <run> --branch B [--year Y \| --at <commit>]` | living roster + each agent's stats + **ids** |

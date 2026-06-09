@@ -120,7 +120,13 @@ class Engine:
             f = max(p.food_base, round(p.food_floor_ratio * n))
         else:
             f = round(n * p.ratio)
-        w.pile = f
+        # food left by those who died at the end of last year rolls into this year's
+        # pile (dead_food="pile"); unclaimed pile food otherwise just spoils on reset.
+        bonus = 0
+        if p.dead_food == "pile" and w.next_pile_bonus:
+            bonus = w.next_pile_bonus
+            w.next_pile_bonus = 0
+        w.pile = f + bonus
         for a in w.living():
             a.bore_this_year = False
             a.repro_done_year = False
@@ -129,8 +135,9 @@ class Engine:
                 w.record("narrate", "village", w.premise, phase="setup")
             w.record("narrate", "village",
                      f"The village is founded by {n} people.", phase="setup")
+        extra = f" ({bonus} of it left by those who passed last year)" if bonus else ""
         w.record("narrate", "village",
-                 f"Year {w.year}: {f} food appears in the pile for {n} people.",
+                 f"Year {w.year}: {w.pile} food appears in the pile for {n} people{extra}.",
                  phase="setup")
 
     # -- the scramble: one-at-a-time willingness draw --------------------- #
@@ -265,7 +272,11 @@ class Engine:
             if initiator and initiator.alive:
                 t["last"] = initiator.id if self._say(initiator, alive, gids) else None
             return True
-        if t["guard"] >= int(w.params.convo_safety_cap):
+        # soft cap scales with group size (turns_per_person × people); the safety cap is
+        # the hard runaway guard. The talk ends at whichever it reaches first.
+        cap = min(int(w.params.convo_safety_cap),
+                  int(w.params.convo_turns_per_person) * len(t["group"]))
+        if t["guard"] >= cap:
             return False
         t["guard"] += 1
         history = self._tail(w, gids)
@@ -313,7 +324,7 @@ class Engine:
                  audience=[target.id], phase="fight")
         return {"initiator": initiator.id, "target": target.id, "demand": int(demand),
                 "attackers": [initiator.id], "defenders": [target.id],
-                "sub": "muster", "muster_pass": 0, "round": 0}
+                "sub": "muster", "muster_pass": 0, "round": 0, "fallen": []}
 
     def _fight_step(self, f):
         """Advance the fight by one step. Returns True while it continues, False once
@@ -381,6 +392,7 @@ class Engine:
             for i in list(fa | fd):
                 if w.agents[i].hp <= 0:
                     self._die(w.agents[i], "combat")
+                    f["fallen"].append(i)
                     fa.discard(i); fd.discard(i)
             for side, enemy in ((fa, fd), (fd, fa)):
                 for i in list(side):
@@ -401,21 +413,55 @@ class Engine:
 
     def _fight_outcome(self, f, attackers, defenders):
         w = self.w
+        mode = w.params.dead_food
         initiator = w.agents.get(f["initiator"])
         target = w.agents.get(f["target"])
-        if attackers and not defenders:
-            amt = min(f["demand"], max(0, target.food)) if target else 0
-            if target and target.id in w.agents:
-                target.food = max(0, target.food - amt)
+        won = bool(attackers and not defenders)
+        iname = initiator.name if initiator else "the attacker"
+
+        if won and target is not None and not target.alive \
+                and initiator is not None and initiator.alive and target.food > 0:
+            # the TARGET was slain: the victor loots the body — and chooses how much to
+            # take (up to everything), no longer capped by the demand. Whatever they
+            # leave drops into this year's pile (below).
+            avail = max(0, target.food)
+            loot = max(0, min(avail, int(decide.loot_choice(w, initiator, target, avail))))
+            initiator.food += loot
+            target.food -= loot
+            w.record("loot", "village",
+                     f"{iname} takes {loot} of {avail} food from {target.name}'s body.",
+                     payload={"amount": loot, "available": avail}, phase="fight")
+        elif won and target is not None and target.alive:
+            # the target survived (routed/fled) but the attackers hold the field: the
+            # victor seizes up to the demanded amount; the target keeps the rest.
+            amt = min(f["demand"], max(0, target.food))
+            target.food = max(0, target.food - amt)
             if initiator:
                 initiator.food += amt
-            iname = initiator.name if initiator else "the attacker"
             w.record("outcome", "village",
-                     f"The attackers prevail; {iname} takes {amt} food"
-                     f"{' from ' + target.name if (target and target.alive) else ' (loot)'}.",
+                     f"The attackers prevail; {iname} seizes {amt} food from {target.name}.",
                      payload={"amount": amt}, phase="fight")
+
+        # everyone who fell in the fight: their remaining stores drop into THIS year's
+        # pile (others can still grab them this year; unclaimed = spoiled at the reset).
+        if mode == "pile":
+            spoils = 0
+            for i in f.get("fallen", []):
+                a = w.agents.get(i)
+                if a is not None and not a.alive and a.food > 0:
+                    spoils += a.food
+                    w.pile += a.food
+                    a.food = 0
+            if spoils:
+                w.record("spoils", "village",
+                         f"{spoils} food from the fallen is left in the plaza for the taking.",
+                         payload={"amount": spoils}, phase="fight")
+
+        if won:
+            if not (target is not None and target.alive):
+                w.record("outcome", "village",
+                         f"The attackers prevail; {iname}'s raid succeeds.", phase="fight")
         else:
-            iname = initiator.name if initiator else "the attacker"
             w.record("outcome", "village",
                      f"The defenders hold; {iname}'s raid fails.", phase="fight")
         return False
@@ -543,11 +589,16 @@ class Engine:
         a.death_year = w.year
         a.death_cause = cause
         a.hp = 0
-        if w.params.dead_food == "pile":
-            w.pile += a.food
+        mode = w.params.dead_food
+        if mode == "lost":
             a.food = 0
-        elif w.params.dead_food == "lost":
-            a.food = 0
+        elif mode == "pile":
+            if cause == "combat":
+                pass               # food stays on the body; the fight resolution loots it
+                                   # (victor first) and drops the rest into THIS year's pile
+            else:                  # year-end death: stores roll into NEXT year's pile
+                w.next_pile_bonus += a.food
+                a.food = 0
         verb = {"starvation": "starves", "combat": "is killed", "natural": "dies"}[cause]
         w.record("death", "village", f"{a.name} {verb} at age {a.age}.",
                  payload={"agent": a.id, "cause": cause},

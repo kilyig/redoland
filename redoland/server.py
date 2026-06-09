@@ -49,9 +49,19 @@ class Manager:
         # a working tree or get picked up by a commit.
         return os.path.join(self.runs_dir, ".worktrees", safe_branch(run), safe_branch(branch))
 
-    def model_factory(self):
+    def model_factory(self, run=None):
+        """A per-agent model factory using the model this run was created with (so a
+        Sonnet village runs on Sonnet, a Haiku village on Haiku)."""
+        import json
         from .cli import make_model_factory
-        return make_model_factory()
+        model = None
+        if run is not None:
+            try:
+                meta = json.load(open(os.path.join(self.path(run), "meta.json")))
+                model = meta.get("params", {}).get("model")
+            except Exception:
+                model = None
+        return make_model_factory(model) if model else make_model_factory()
 
     # -- reads (no model needed) ----------------------------------------- #
     def list_runs(self):
@@ -140,7 +150,7 @@ class Manager:
             # one worktree per running branch (so same-world branches don't clash)
             main_store = self.store(run)
             wt = main_store.ensure_worktree(branch, self.worktree_path(run, branch))
-            sim = Simulation.open(wt, self.model_factory())
+            sim = Simulation.open(wt, self.model_factory(run))
             sim.store.checkout_branch(branch)
             sim.run(years=None, log=self._progress(key),
                     should_stop=lambda: JOBS.get(key, {}).get("pause", True))
