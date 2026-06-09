@@ -250,6 +250,115 @@ def test_fork_at_action_and_inject():
     shutil.rmtree(path, ignore_errors=True)
 
 
+def test_stepwise_talk_resumable():
+    """A group talk is driven one utterance at a time: the opener is its own step, each
+    later step adds at most one utterance, and the talk sub-state lives on the cursor
+    (so it is JSON-serializable / checkpointable) until the conversation closes."""
+    import json
+    speak = {"n": 0}
+    def cf(prompt, responses):
+        if "do you want to speak now" in prompt.lower():
+            speak["n"] += 1
+            return 0 if speak["n"] <= 3 else 1
+        return 0
+    stub = StubModel(choice_fn=cf,
+                     text_fn=lambda p: "We look after kin." if "say your next line" in p.lower() else "")
+    w = World(Params(), RNG(5), model_factory=lambda t: stub, randomize_choices=False); w.year = 1
+    mkbody(w, "a001", "Eron", "male"); mkbody(w, "a002", "Kesh", "female"); mkbody(w, "a003", "Ivo", "male")
+    eng = Engine(w); w.year_events = []
+    w.cursor = {"phase": "scramble", "last": None, "steps": 0}
+    eng._initiate(w.agents["a001"], {"kind": "talk", "partners": ["a002", "a003"]}, stepwise=True)
+    check(w.cursor["phase"] == "talk" and "talk" in w.cursor, "talk hands off to the state machine")
+    check(json.loads(json.dumps(w.cursor)) == w.cursor, "the talk cursor is JSON-serializable (checkpointable)")
+    check(sum(1 for e in w.year_events if e["kind"] == "convo") == 1, "the opener is its own entry step")
+    labels = []
+    guard = 0
+    while w.cursor["phase"] == "talk" and guard < 50:
+        guard += 1
+        before = sum(1 for e in w.year_events if e["kind"] == "say")
+        labels.append(eng.step())
+        after = sum(1 for e in w.year_events if e["kind"] == "say")
+        check(after - before <= 1, "at most one utterance per step")
+    check(labels[-1] == "talk_end", "the closing step is labelled talk_end")
+    check(w.cursor["phase"] == "scramble" and "talk" not in w.cursor,
+          "the talk clears its sub-state and returns control to the scramble")
+    says = [e for e in w.year_events if e["kind"] == "say"]
+    check(len(says) >= 1 and says[0]["speaker"] == "a001", "initiator opens; utterances recorded")
+
+
+def test_stepwise_talk_persists_through_git():
+    """Pause mid-conversation and resume from the git checkpoint: the talk's group and
+    position survive a load_world() round-trip and the conversation runs to a clean close."""
+    path = "/tmp/redoland_talk_resume"
+    shutil.rmtree(path, ignore_errors=True)
+    speak = {"n": 0}
+    def cf(prompt, responses):
+        if "do you want to speak now" in prompt.lower():
+            speak["n"] += 1
+            return 0 if speak["n"] <= 4 else 1
+        return 0
+    stub = StubModel(choice_fn=cf,
+                     text_fn=lambda p: "Kin first." if "say your next line" in p.lower() else "")
+    sim = Simulation.create(path, Params(founders=4), seed=5,
+                            model_factory=lambda t: stub, randomize_choices=False)
+    sim.store.checkout_branch("main")
+    eng = sim.engine()
+    eng.step()                                       # year_start -> setup (year 1)
+    a = eng.w.living()
+    eng._initiate(a[0], {"kind": "talk", "partners": [a[1].id, a[2].id]}, stepwise=True)
+    sim.store.commit_year(eng.w, "y1 action: talk opener", tag_year=False)
+    eng.step()                                       # one utterance
+    sim.store.commit_year(eng.w, "y1 talk", tag_year=False)
+    check(eng.w.cursor["phase"] == "talk", "still mid-talk after one utterance")
+    w2 = sim.store.load_world("main")                # reload from the git checkpoint
+    check(w2.cursor.get("phase") == "talk" and "talk" in w2.cursor,
+          "mid-talk cursor (group + position) restored from git")
+    n_before = sum(1 for e in w2.year_events if e["kind"] == "say")
+    eng2 = Engine(w2, sim.mortality)
+    guard = 0
+    while w2.cursor["phase"] == "talk" and guard < 50:
+        guard += 1; eng2.step()
+    n_after = sum(1 for e in w2.year_events if e["kind"] == "say")
+    check(n_after >= n_before, "the conversation resumes from the checkpoint and continues")
+    check(w2.cursor["phase"] == "scramble", "talk closes back into the scramble after resume")
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def test_stepwise_fight_resumable():
+    """A fight is driven step by step: muster pass(es), one decide step, then blow
+    rounds, each as its own resumable step, with the fight sub-state on the cursor."""
+    import json
+    def cf(prompt, responses):
+        p = prompt.lower()
+        if "press the attack or call it off" in p: return 0   # press
+        if "stand and fight, or submit" in p: return 0        # stand
+        if "press on or flee" in p: return 0                  # press on
+        if "do you join" in p: return 1                       # decline to join
+        return 0
+    stub = StubModel(choice_fn=cf, text_fn=lambda p: '{"invite":[]}' if "invite" in p else "")
+    w = World(Params(), RNG(5), model_factory=lambda t: stub, randomize_choices=False); w.year = 1
+    mkbody(w, "a001", "Eron", "male", strength=90, hp=100, food=2)
+    mkbody(w, "a002", "Kesh", "female", strength=30, hp=100, food=5)
+    eng = Engine(w); w.year_events = []
+    w.cursor = {"phase": "scramble", "last": None, "steps": 0}
+    eng._initiate(w.agents["a001"], {"kind": "attack", "target": "a002", "demand": 5}, stepwise=True)
+    check(w.cursor["phase"] == "fight" and "fight" in w.cursor, "attack hands off to the state machine")
+    check(json.loads(json.dumps(w.cursor)) == w.cursor, "the fight cursor is JSON-serializable (checkpointable)")
+    subs = set()
+    guard = 0
+    while w.cursor["phase"] == "fight" and guard < 80:
+        guard += 1
+        if "fight" in w.cursor:
+            subs.add(w.cursor["fight"]["sub"])
+        eng.step()
+    check({"muster", "decide", "blows"} & subs, "the fight passes through muster/decide/blow sub-phases")
+    check(w.cursor["phase"] == "scramble" and "fight" not in w.cursor,
+          "the fight clears its sub-state and returns control to the scramble")
+    kinds = [e["kind"] for e in w.year_events]
+    check("outcome" in kinds or "submit" in kinds or "cancel" in kinds, "the fight reaches a resolution")
+    check("blow" in kinds or "submit" in kinds, "blows are traded or the target submits")
+
+
 def test_distributions():
     stub = survival_stub()
     eng = Engine.found(Params(founders=5, ratio=1.6), model_factory=lambda t: stub,
@@ -265,6 +374,8 @@ if __name__ == "__main__":
     for fn in [test_model_parsing, test_engine_invariants, test_sole_actor_can_continue,
                test_determinism,
                test_combat_resolves, test_birth_crossover, test_max_maternal_age, test_group_talk,
+               test_stepwise_talk_resumable, test_stepwise_talk_persists_through_git,
+               test_stepwise_fight_resumable,
                test_worldline_fork_inject_replay, test_fork_at_action_and_inject,
                test_distributions]:
         print(fn.__name__)
