@@ -94,6 +94,7 @@ class GitStore:
             "used_names": sorted(world.used_names),
             "rng_state": world.rng.get_state(), "params": world.params.to_dict(),
             "cursor": world.cursor,            # resumable run position (phase/last/steps)
+            "premise": world.premise,          # the world's "stage" (creator's backstory)
         }
         self._write_json("meta.json", meta)
         adir = os.path.join(self.path, "agents")
@@ -123,7 +124,8 @@ class GitStore:
         rng = RNG(state=meta["rng_state"])
         world = World(params, rng, branch=meta["branch"],
                       model_factory=self.model_factory,
-                      randomize_choices=self.randomize_choices)
+                      randomize_choices=self.randomize_choices,
+                      premise=meta.get("premise", ""))
         world.year = meta["year"]
         world.pile = meta["pile"]
         world.next_eid = meta["next_eid"]
@@ -184,6 +186,38 @@ class GitStore:
 
     def checkout_branch(self, branch: str):
         self._git("checkout", "-q", safe_branch(branch))
+
+    # -- worktrees (concurrency: one working tree per running branch) ------ #
+    # A git repo has a single working tree, so two branches of the SAME run cannot be
+    # advanced at once through it. Linked worktrees give each running branch its own
+    # working dir while sharing the object DB and refs — so commits made in a worktree
+    # are immediately visible to ref-based reads (git show <branch>:path) from the main
+    # repo. This is what lets multiple branches of one world run concurrently.
+    def _free_branch_from_main(self, b: str):
+        """If `b` is the branch checked out in the MAIN working tree, detach it so a
+        worktree can claim it (reads are all ref-based, so a detached main tree is
+        fine). Uniformly running every branch in a worktree keeps the model simple."""
+        cur = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=self.path,
+                             capture_output=True, text=True).stdout.strip()
+        if cur == b:
+            subprocess.run(["git", "checkout", "--detach", "-q"], cwd=self.path,
+                           capture_output=True, text=True)
+
+    def ensure_worktree(self, branch: str, wt_path: str) -> str:
+        """Create (or reuse) a linked worktree with `branch` checked out at `wt_path`,
+        and return it. Idempotent: an existing worktree dir is reused as-is."""
+        b = safe_branch(branch)
+        if os.path.exists(os.path.join(wt_path, ".git")):   # .git is a FILE in a worktree
+            return wt_path
+        os.makedirs(os.path.dirname(wt_path), exist_ok=True)
+        subprocess.run(["git", "worktree", "prune"], cwd=self.path,
+                       capture_output=True, text=True)
+        self._free_branch_from_main(b)
+        r = subprocess.run(["git", "worktree", "add", "-f", wt_path, b],
+                           cwd=self.path, capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"git worktree add ({b}) failed:\n{r.stderr.strip()}")
+        return wt_path
 
     def current_commit(self) -> str:
         return self._git("rev-parse", "HEAD")

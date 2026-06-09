@@ -359,6 +359,88 @@ def test_stepwise_fight_resumable():
     check("blow" in kinds or "submit" in kinds, "blows are traded or the target submits")
 
 
+def test_premise_set_the_stage():
+    """A world premise is woven into every agent's prompt, announced in year 1, and
+    survives a git round-trip (so it reaches agents born later too)."""
+    from redoland.components import VillagerContext
+    path = "/tmp/redoland_premise"; shutil.rmtree(path, ignore_errors=True)
+    premise = "Survivors of a flood that drowned the old kingdom."
+    sim = Simulation.create(path, Params(founders=4), seed=3,
+                            model_factory=lambda t: survival_stub(),
+                            randomize_choices=False, premise=premise)
+    w = sim.store.load_world("main")
+    check(w.premise == premise, "premise persists through a git round-trip")
+    aid = w.living()[0].id
+    ctx = VillagerContext(w, aid)._make_pre_act_value()
+    check("THE WORLD" in ctx and premise in ctx, "premise woven into the agent prompt")
+    sim.run(1)
+    raw = sim.store.read_at("main-y1", "events/year-1.jsonl") or ""
+    check(premise in raw, "premise announced in year 1's transcript")
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def test_concurrent_branches_via_worktrees():
+    """Two branches of the SAME world advance at the same time, each in its own git
+    worktree; their commits land on the shared refs and are visible from the main repo."""
+    import threading
+    from redoland.store import GitStore
+    path = "/tmp/redoland_concurrent"; shutil.rmtree(path, ignore_errors=True)
+    wt_root = "/tmp/redoland_concurrent_wt"; shutil.rmtree(wt_root, ignore_errors=True)
+    mf = lambda t: survival_stub()
+    sim = Simulation.create(path, Params(founders=4, ratio=1.6, start_food=1), seed=7,
+                            model_factory=mf, randomize_choices=False)
+    sim.run(1)
+    sim.fork("main", 1, "beta")                       # a second branch of the same world
+    # one worktree per branch (created serially, then run concurrently)
+    setup = GitStore(path, model_factory=mf, randomize_choices=False)
+    wts = {b: setup.ensure_worktree(b, os.path.join(wt_root, b)) for b in ("main", "beta")}
+    check(os.path.exists(os.path.join(wts["main"], ".git")) and wts["main"] != wts["beta"],
+          "each branch gets its own worktree")
+
+    def run_branch(b):
+        s = Simulation.open(wts[b], mf)
+        s.store.checkout_branch(b)
+        s.run(2)
+    ts = [threading.Thread(target=run_branch, args=(b,)) for b in ("main", "beta")]
+    for t in ts: t.start()
+    for t in ts: t.join()
+    reader = GitStore(path, model_factory=mf, randomize_choices=False)
+    check(reader.years_for_branch("main") and reader.years_for_branch("main")[-1] >= 3,
+          "main advanced while beta ran")
+    check(reader.years_for_branch("beta") and reader.years_for_branch("beta")[-1] >= 3,
+          "beta advanced while main ran")
+    shutil.rmtree(path, ignore_errors=True); shutil.rmtree(wt_root, ignore_errors=True)
+
+
+def test_server_concurrent_jobs():
+    """The server runs several branches at once: start registers each in the active
+    set; pause stops it and drops it from the set (so the picker only lists what runs)."""
+    import time
+    from redoland import server as srv
+    base = "/tmp/redoland_srv"; shutil.rmtree(base, ignore_errors=True)
+    os.makedirs(base, exist_ok=True)
+    mf = lambda t: survival_stub()
+    for name in ("w1", "w2"):
+        Simulation.create(os.path.join(base, name),
+                          Params(founders=3, ratio=1.6, start_food=1), seed=4,
+                          model_factory=mf, randomize_choices=False)
+    srv.JOBS.clear()
+    mgr = srv.Manager(base)
+    mgr.model_factory = lambda: mf                       # stub instead of claude -p
+    r1 = mgr.start("w1", "main"); r2 = mgr.start("w2", "main")
+    check(r1["ok"] and r2["ok"], "two branches of different worlds start concurrently")
+    keys = {(a["run"], a["branch"]) for a in mgr.active()["active"]}
+    check(("w1", "main") in keys and ("w2", "main") in keys, "both show up in the active set")
+    check(not mgr.start("w1", "main")["ok"], "starting an already-running branch is rejected")
+    mgr.pause("w1", "main"); mgr.pause("w2", "main")
+    for _ in range(100):                                 # wait for the workers to stop
+        if not mgr.active()["active"]:
+            break
+        time.sleep(0.05)
+    check(mgr.active()["active"] == [], "paused branches drop out of the active set")
+    shutil.rmtree(base, ignore_errors=True)
+
+
 def test_distributions():
     stub = survival_stub()
     eng = Engine.found(Params(founders=5, ratio=1.6), model_factory=lambda t: stub,
@@ -377,6 +459,8 @@ if __name__ == "__main__":
                test_stepwise_talk_resumable, test_stepwise_talk_persists_through_git,
                test_stepwise_fight_resumable,
                test_worldline_fork_inject_replay, test_fork_at_action_and_inject,
+               test_premise_set_the_stage, test_concurrent_branches_via_worktrees,
+               test_server_concurrent_jobs,
                test_distributions]:
         print(fn.__name__)
         fn()

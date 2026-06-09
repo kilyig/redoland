@@ -22,10 +22,14 @@ from .core import Agent, Params, RNG
 class World:
     def __init__(self, params: Params, rng: RNG, branch: str = "main",
                  model_factory: Optional[Callable[[int], object]] = None,
-                 randomize_choices: bool = True):
+                 randomize_choices: bool = True, premise: str = ""):
         self.params = params
         self.rng = rng
         self.branch = branch
+        # the "stage": an optional premise/backstory the world's creator sets at
+        # founding. Woven into every agent's prompt (so newborns learn it too) and
+        # announced in year 1's transcript. Empty = the default scarcity setting.
+        self.premise = premise or ""
         # Concordia shuffles CHOICE options to reduce position bias (good for the
         # real model; turn OFF for deterministic tests with the scripted stub).
         self.randomize_choices = randomize_choices
