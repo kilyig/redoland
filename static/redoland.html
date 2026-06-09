@@ -77,8 +77,8 @@
   <button class="go" id="runbtn" onclick="toggleRun()">▶ Start</button>
   <span class="hint">creating &amp; forking worldlines is done by asking the AI</span>
   <div class="right">
-    <label>running</label>
-    <div class="dd" id="activesel" title="jump to a branch that is running right now"></div>
+    <label id="runlabel" style="display:none">running</label>
+    <div class="dd" id="activesel" style="display:none" title="jump to a branch that is running right now"></div>
     <span class="status" id="status">all worlds are paused</span>
   </div>
 </header>
@@ -244,13 +244,18 @@ async function jumpActive(v){
 // the top-right picker lists ONLY what is running now; pausing a branch drops it
 async function pollActive(){
   const d = await api('/api/active'); ACTIVE = d.active||[];
+  const running = ACTIVE.length>0;
+  // the "running" label + picker exist ONLY while something runs; otherwise the only
+  // thing on the right is "all worlds are paused".
+  $('runlabel').style.display = running ? '' : 'none';
+  $('activesel').style.display = running ? '' : 'none';
   const here = `${RUN}${SEPC}${BR}`;
   const items = ACTIVE.map(a=>({ value:`${a.run}${SEPC}${a.branch}`,
     label:`${a.run} / ${a.branch}${a.year? ' · y'+a.year : ''}${a.phase==='error'? ' ⚠' : ''}` }));
-  renderDD('activesel', items, here, jumpActive, ACTIVE.length? `${ACTIVE.length} running` : 'none running');
+  if(running) renderDD('activesel', items, here, jumpActive, `${ACTIVE.length} running`);
   const st=$('status'); const err=ACTIVE.find(a=>a.phase==='error');
-  if(err){ st.className='status'; st.textContent='error: '+(err.error||'').slice(0,60); }
-  else if(ACTIVE.length){ st.className='status run'; st.innerHTML=`● <b>${ACTIVE.length}</b> branch${ACTIVE.length>1?'es':''} running`; }
+  if(err){ st.className='status run'; st.textContent='error: '+(err.error||'').slice(0,60); }
+  else if(running){ st.className='status run'; st.innerHTML=`● <b>${ACTIVE.length}</b> branch${ACTIVE.length>1?'es':''} running`; }
   else { st.className='status'; st.textContent='all worlds are paused'; }
   updateRunBtn();
 }
