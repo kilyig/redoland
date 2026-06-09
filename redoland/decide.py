@@ -223,6 +223,19 @@ def eat_choice(world, a) -> int:
     return max(0, min(a.food, n))
 
 
+def loot_choice(world, aggressor, victim, max_amount: int) -> int:
+    """A slain enemy's stores are the victor's to take — any amount up to everything
+    (the demand no longer caps it). Whatever is left falls to the village pile."""
+    txt = _free(world, aggressor,
+        f"You have killed {victim.name} in the raid. Their body holds {max_amount} food, "
+        f"yours for the taking — you may take any amount from 0 to {max_amount}. Whatever "
+        f"you leave falls to the village plaza for others to claim. How much do you take? "
+        f"Reply with just a number.")
+    m = re.search(r"-?\d+", txt)
+    n = int(m.group(0)) if m else int(max_amount)   # a victor grabs all by default
+    return max(0, min(int(max_amount), n))
+
+
 def compact(world, a, events) -> str:
     digest = "\n".join(f"{e.get('who','')}: {e.get('text','')}" for e in events)
     out = _free(world, a,

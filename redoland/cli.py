@@ -28,20 +28,34 @@ def make_model_factory(model: str = "claude-haiku-4-5"):
     return lambda thinking_tokens: ClaudeCLIModel(thinking_tokens=thinking_tokens, model=model)
 
 
+def run_model(name: str) -> str:
+    """The Claude model this run was created with (stored in its params; default Haiku
+    for legacy runs created before model selection existed)."""
+    import json
+    import os
+    try:
+        meta = json.load(open(os.path.join(run_path(name), "meta.json")))
+        return meta.get("params", {}).get("model") or "claude-haiku-4-5"
+    except Exception:
+        return "claude-haiku-4-5"
+
+
 def _sim(name):
     from .sim import Simulation
-    return Simulation.open(run_path(name), make_model_factory())
+    # think with the model the village was created with (Sonnet villages stay Sonnet).
+    return Simulation.open(run_path(name), make_model_factory(run_model(name)))
 
 
 def cmd_init(a):
     from .sim import Simulation
     ratio = PRESETS.get(a.preset, a.ratio) if a.preset else a.ratio
-    params = Params(founders=a.founders, ratio=ratio)
+    model = a.model or Params().model
+    params = Params(founders=a.founders, ratio=ratio, model=model)
     premise = (a.premise or "").strip()
-    sim = Simulation.create(run_path(a.name), params, a.seed, make_model_factory(),
+    sim = Simulation.create(run_path(a.name), params, a.seed, make_model_factory(model),
                             premise=premise)
-    print(f"created run '{a.name}' (ratio {ratio}, {a.founders} founders, seed {a.seed})"
-          + (f"\n  stage: {premise}" if premise else ""))
+    print(f"created run '{a.name}' (ratio {ratio}, {a.founders} founders, seed {a.seed}, "
+          f"model {model})" + (f"\n  stage: {premise}" if premise else ""))
     if a.years:
         sim.run(a.years, log=lambda y, w: print(f"  year {y}: {len(w.living())} living"))
 
@@ -186,6 +200,10 @@ def build_parser():
                         "every agent and announced in year 1.")
     s.add_argument("--preset", choices=list(PRESETS), default=None,
                    help="named scarcity preset (overrides --ratio)")
+    s.add_argument("--model", default=None,
+                   help="Claude model the village's agents think with, e.g. "
+                        "claude-sonnet-4-6 or claude-haiku-4-5 (default %s). Stored with "
+                        "the run, so it always thinks with this model." % Params().model)
     s.add_argument("--years", type=int, default=0, help="run this many years immediately (default 0)")
     s.set_defaults(fn=cmd_init)
 
