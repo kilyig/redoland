@@ -118,7 +118,7 @@ class Manager:
         JOB["branch"] = world.branch
 
 
-def serve(runs_dir="runs", port=8000):
+def serve(runs_dir="runs", port=8000, host="0.0.0.0"):
     mgr = Manager(runs_dir)
 
     class Handler(BaseHTTPRequestHandler):
@@ -170,8 +170,10 @@ def serve(runs_dir="runs", port=8000):
             except Exception as e:  # noqa
                 return self._send({"error": str(e)}, 500)
 
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    print(f"Redoland UI: http://127.0.0.1:{port}  (runs dir: {mgr.runs_dir})")
+    # bind 0.0.0.0 by default so the UI is reachable from the host when running in a
+    # container (via published/forwarded ports), not only from inside it.
+    httpd = ThreadingHTTPServer((host, port), Handler)
+    print(f"Redoland UI: http://{host}:{port}  (runs dir: {mgr.runs_dir})")
     print("Ctrl-C to stop.")
     try:
         httpd.serve_forever()

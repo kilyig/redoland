@@ -113,7 +113,7 @@ def cmd_diff(a):
 
 def cmd_serve(a):
     from .server import serve
-    serve(os.path.abspath(a.runs_dir), port=a.port)
+    serve(os.path.abspath(a.runs_dir), port=a.port, host=a.host)
 
 
 _OVERVIEW = """\
@@ -256,6 +256,8 @@ def build_parser():
                                    "live stream, stat distributions, and a Start/Pause button.")
     s.add_argument("--runs-dir", default="runs", help="directory of runs to serve (default ./runs)")
     s.add_argument("--port", type=int, default=8000, help="port (default 8000)")
+    s.add_argument("--host", default="0.0.0.0",
+                   help="bind address (default 0.0.0.0 — reachable from the host in a container)")
     s.set_defaults(fn=cmd_serve)
     return p
 
