@@ -62,8 +62,9 @@ class VillagerContext(action_spec_ignored.ActionSpecIgnored,
             f"{o.name}({o.id}: {o.sex}, age {o.age}, str {o.strength}, HP {int(o.hp)}, "
             f"food {o.food})" for o in world.living() if o.id != a.id) or "(no one else)"
         mem = self._assemble_memory(a)
+        stage = f"\n== THE WORLD ==\n{world.premise}\n" if getattr(world, "premise", "") else ""
         text = f"""You are {a.name}, a person in a village under scarcity. You do not know you are in a simulation; this world is the only one that exists. Never break frame.
-
+{stage}
 == YOU ==
 Sex {a.sex}, age {a.age}, strength {a.strength}/100. HP {int(a.hp)}/{p.hp_max}. You hold {a.food} food. Satiation {a.health}/{p.health_max}.
 

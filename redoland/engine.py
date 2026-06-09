@@ -27,10 +27,10 @@ class Engine:
     # ===================================================================== #
     @classmethod
     def found(cls, params: Params, model_factory, seed: int, mortality=None,
-              randomize_choices: bool = True) -> "Engine":
+              randomize_choices: bool = True, premise: str = "") -> "Engine":
         rng = RNG(seed=seed)
         world = World(params, rng, model_factory=model_factory,
-                      randomize_choices=randomize_choices)
+                      randomize_choices=randomize_choices, premise=premise)
         eng = cls(world, mortality)
         for _ in range(params.founders):
             sex = "male" if rng.chance(0.5) else "female"
@@ -125,6 +125,8 @@ class Engine:
             a.bore_this_year = False
             a.repro_done_year = False
         if w.year == 1:            # year 1 is the start; announce the founding here
+            if w.premise:          # the creator's "stage" — public to all from the start
+                w.record("narrate", "village", w.premise, phase="setup")
             w.record("narrate", "village",
                      f"The village is founded by {n} people.", phase="setup")
         w.record("narrate", "village",

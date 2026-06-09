@@ -37,8 +37,11 @@ def cmd_init(a):
     from .sim import Simulation
     ratio = PRESETS.get(a.preset, a.ratio) if a.preset else a.ratio
     params = Params(founders=a.founders, ratio=ratio)
-    sim = Simulation.create(run_path(a.name), params, a.seed, make_model_factory())
-    print(f"created run '{a.name}' (ratio {ratio}, {a.founders} founders, seed {a.seed})")
+    premise = (a.premise or "").strip()
+    sim = Simulation.create(run_path(a.name), params, a.seed, make_model_factory(),
+                            premise=premise)
+    print(f"created run '{a.name}' (ratio {ratio}, {a.founders} founders, seed {a.seed})"
+          + (f"\n  stage: {premise}" if premise else ""))
     if a.years:
         sim.run(a.years, log=lambda y, w: print(f"  year {y}: {len(w.living())} living"))
 
@@ -154,11 +157,13 @@ INJECT --changes SCHEMA (all keys optional; everything is PUBLIC to all agents)
   Agent ids (a001, a002, …) come from `redoland state` / `redoland timeline`.
 
 NOTES
-  * Don't run two processes against the SAME run at once (they share one git repo).
+  * One writer per BRANCH. The web UI can run many branches at once (each in its own
+    git worktree), but don't `run`/`inject` a branch from here while the UI is running
+    that same branch. Different branches in parallel are fine.
   * Don't restart a run while a year is well underway — the uncommitted in-progress
     year is discarded. Committed years (git) are always safe.
-  * The web UI (`redoland serve`) is read-only + a Start/Pause button; creating and
-    forking worldlines is done here, via this CLI.
+  * The web UI (`redoland serve`) is read-only + a per-branch Start/Pause button;
+    creating and forking worldlines is done here, via this CLI.
 """
 
 
@@ -175,6 +180,10 @@ def build_parser():
     s.add_argument("--founders", type=int, default=6, help="number of founding villagers (default 6)")
     s.add_argument("--ratio", type=float, default=Params().ratio,
                    help="food-per-person ratio: pile = round(ratio * population) (default %(default)s)")
+    s.add_argument("--premise", default=None,
+                   help="set the stage: a premise/backstory for this world (e.g. "
+                        "'Survivors of a flood that drowned the old kingdom'). Shown to "
+                        "every agent and announced in year 1.")
     s.add_argument("--preset", choices=list(PRESETS), default=None,
                    help="named scarcity preset (overrides --ratio)")
     s.add_argument("--years", type=int, default=0, help="run this many years immediately (default 0)")

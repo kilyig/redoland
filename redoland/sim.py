@@ -26,12 +26,12 @@ class Simulation:
     # -- lifecycle -------------------------------------------------------- #
     @classmethod
     def create(cls, path, params: Params, seed: int, model_factory: Callable[[int], object],
-               mortality=None, randomize_choices: bool = True) -> "Simulation":
+               mortality=None, randomize_choices: bool = True, premise: str = "") -> "Simulation":
         store = GitStore(path, model_factory=model_factory, randomize_choices=randomize_choices)
         store.init_repo()
         sim = cls(store, mortality)
         eng = Engine.found(params, model_factory, seed, sim.mortality,
-                           randomize_choices=randomize_choices)
+                           randomize_choices=randomize_choices, premise=premise)
         # The founding population is a pre-year-1 genesis snapshot: committed (so a
         # later run can load it) but NOT tagged as a year. The simulation starts at
         # year 1, which announces the founding in its own transcript.

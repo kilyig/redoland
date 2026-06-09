@@ -37,7 +37,7 @@ change something, and watch how history diverges.
 
 | Command | What it does |
 |---|---|
-| `init <run> --founders 6 --seed 1 [--years N]` | create a new village |
+| `init <run> --founders 6 --seed 1 [--premise "…"] [--years N]` | create a new village (optionally **set the stage** with a premise) |
 | `run <run> --branch B --years N` | advance a branch N years (1 commit per action) |
 | `timeline <run> --branch B [--n 40]` | per-action commit history → **fork points** |
 | `state <run> --branch B [--year Y \| --at <commit>]` | living roster + each agent's stats + **ids** |
@@ -45,7 +45,7 @@ change something, and watch how history diverges.
 | `inject <run> --branch B --narrate "…" --changes '<json>'` | inject an event (public to all) |
 | `diff <run> A yA B yB` | compare two branch/year snapshots |
 | `log <run>` / `metrics <run> --branch B --year Y` | branch summaries / full JSON metrics |
-| `serve [--port 8000]` | read-only web UI + a Start/Pause button |
+| `serve [--port 8000]` | read-only web UI + per-branch Start/Pause (**many branches run at once**) |
 
 Agent ids (`a001`, `a002`, …) come from `state` and `timeline`.
 
@@ -86,9 +86,13 @@ $PY -m redoland diff     myrun main 12 elephant 12
 
 ## Hard rules
 
-- **One process per run.** A run is a single git repo; two concurrent processes
-  writing it will corrupt it. The web UI must not Start a branch that the CLI is
-  already running, and vice versa.
+- **Concurrency is via git worktrees, one writer per branch.** The web UI can run
+  **multiple branches at once** — each running branch gets its own linked worktree
+  under `runs/.worktrees/<run>/<branch>/`, so commits to different branches never
+  clash (refs are shared, so reads from the main repo see them). The rule is one
+  writer **per branch**: don't `run`/`inject` a branch from the CLI while the UI is
+  running that same branch (or start the same branch twice). Different branches —
+  same world or not — are fine in parallel.
 - **Don't interrupt an in-progress year.** Committed years (git tags `<branch>-y<N>`)
   are always safe, but the *uncommitted in-progress* year is discarded if you stop a
   run. Before restarting a run to pick up a code change, check how far the current
