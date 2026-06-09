@@ -129,9 +129,12 @@ class Engine:
                 actor = la
         return actor
 
-    def _initiate(self, actor):
+    def _initiate(self, actor, action=None):
+        # action=None: the agent chooses (normal scramble). Otherwise the action is
+        # FORCED (used by inject to script a specific agent move into the timeline).
         w = self.w
-        action = decide.choose_action(w, actor)
+        if action is None:
+            action = decide.choose_action(w, actor)
         kind = action.get("kind", "pass")
         if kind == "take":
             amt = max(0, min(int(action.get("amount", 1) or 0), w.pile))

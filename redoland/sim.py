@@ -60,54 +60,22 @@ class Simulation:
             self.store.checkout_branch(eng.w.branch)
         except Exception:
             pass
-        live = self._open_live(eng.w)
-        eng.w.event_sink = live["sink"]
         years_done = 0
-        try:
-            while years is None or years_done < years:
-                if should_stop() or not eng.w.living():
-                    break
-                label = eng.step()
-                is_boundary = (label == "year_end")
-                last_ev = eng.w.year_events[-1] if eng.w.year_events else None
-                desc = (last_ev.get("text") or last_ev.get("kind")) if last_ev else label
-                self.store.commit_year(eng.w, f"y{eng.w.year} {label}: {desc[:80]}",
-                                       tag_year=is_boundary)
-                if is_boundary:
-                    years_done += 1
-                    log(eng.w.year, eng.w)
-        finally:
-            eng.w.event_sink = None
-            live["close"]()
+        # Every action is its own commit, so the UI just polls the committed transcript
+        # (incl. the in-progress year) — there is no separate live stream to maintain.
+        while years is None or years_done < years:
+            if should_stop() or not eng.w.living():
+                break
+            label = eng.step()
+            is_boundary = (label == "year_end")
+            last_ev = eng.w.year_events[-1] if eng.w.year_events else None
+            desc = (last_ev.get("text") or last_ev.get("kind")) if last_ev else label
+            self.store.commit_year(eng.w, f"y{eng.w.year} {label}: {desc[:80]}",
+                                   tag_year=is_boundary)
+            if is_boundary:
+                years_done += 1
+                log(eng.w.year, eng.w)
         return eng.w
-
-    def _open_live(self, world):
-        path = os.path.join(self.store.path, "live.jsonl")
-        try:
-            with open(path, "w") as fh:
-                fh.write(json.dumps({
-                    "eid": "live", "year": world.year, "phase": "meta",
-                    "kind": "run_start", "speaker": "village", "who": "the village",
-                    "audience": "public", "payload": {},
-                    "text": f"live run — branch {world.branch}, continuing after year {world.year}",
-                }) + "\n")
-            fh = open(path, "a")
-        except OSError:
-            return {"sink": lambda ev: None, "close": lambda: None}
-
-        def sink(ev):
-            try:
-                fh.write(json.dumps(ev) + "\n")
-                fh.flush()
-            except Exception:
-                pass
-
-        def close():
-            try:
-                fh.close()
-            except Exception:
-                pass
-        return {"sink": sink, "close": close}
 
     # -- fork (from a year tag OR any action-commit) ---------------------- #
     def fork(self, parent_branch: str, year: int, new_branch: str = None):
@@ -130,24 +98,43 @@ class Simulation:
     # -- inject an event (the v1 manipulable params; public to all) ------- #
     def inject(self, branch: str, changes: dict = None, narrative: str = None,
                ratio: float = None, pile: int = None, narrate: str = None):
-        """Apply an authored event at the branch tip as a new commit. `changes` is the
-        structured spec (see intervene.apply_changes). Legacy ratio/pile/narrate kwargs
-        are still accepted. The explanation + the mechanical effects are recorded as one
-        PUBLIC event in every agent's memory."""
+        """Apply an authored event at the branch tip as a new commit. `changes` may carry:
+          * structured state changes (intervene.apply_changes): agents/kill/pile/spawn/params
+          * "actions": a list of FORCED agent moves, e.g.
+              [{"actor":"a001","kind":"take","amount":3},
+               {"actor":"a001","kind":"talk","partners":["a002"]}]
+            each runs through the real engine (take/give resolve instantly; talk/attack/child
+            play out, which uses claude -p). State changes apply first, then actions.
+        Everything is PUBLIC: an explanation event (with the mechanical effects) is recorded
+        into every agent's memory, alongside whatever events the forced actions produce."""
         from .intervene import apply_changes
         changes = dict(changes or {})
         if ratio is not None:
             changes.setdefault("params", {})["ratio"] = ratio
         if pile is not None:
             changes["pile"] = {"set": pile}
-        narrative = narrative or narrate or "An event befalls the village."
+        actions = changes.pop("actions", None) or []
         self.store.checkout_branch(branch)
         world = self.store.load_world()
         effects = apply_changes(world, changes)
-        text = narrative + (" (" + "; ".join(effects) + ")" if effects else "")
-        world.record("inject", "village", text, phase="inject")   # public → all agents
-        self.store.commit_year(world, f"inject @y{world.year}: {narrative[:50]}", tag_year=False)
-        return {"effects": effects, "text": text}
+        # an explanation event for the system-style changes (skip if it's only actions)
+        text = None
+        if narrative or narrate or effects:
+            text = (narrative or narrate or "An event befalls the village.") + \
+                   (" (" + "; ".join(effects) + ")" if effects else "")
+            world.record("inject", "village", text, phase="inject")   # public → all agents
+        # forced agent actions (scripted moves)
+        forced = []
+        if actions:
+            eng = Engine(world, self.mortality)
+            for act in actions:
+                actor = world.agents.get(act.get("actor"))
+                if actor and actor.alive:
+                    eng._initiate(actor, {k: v for k, v in act.items() if k != "actor"})
+                    forced.append(act)
+        msg = (narrative or narrate or (f"{len(forced)} action(s)" if forced else "event"))
+        self.store.commit_year(world, f"inject @y{world.year}: {str(msg)[:50]}", tag_year=False)
+        return {"effects": effects, "actions": forced, "text": text}
 
     # -- replay forward --------------------------------------------------- #
     def replay(self, branch: str, years: int, log=lambda *_: None):
