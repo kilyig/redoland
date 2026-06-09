@@ -145,8 +145,12 @@ INJECT --changes SCHEMA (all keys optional; everything is PUBLIC to all agents)
     "kill":   ["a005"],                                          # agents who die
     "pile":   {"set": 0} | {"add": 20},                          # the plaza's food
     "spawn":  [{"sex":"female","age":25,"strength":60,"food":4}],# a newcomer arrives
-    "params": {"ratio": 0.5}                                     # a rule change, going forward
+    "params": {"ratio": 0.5},                                    # a rule change, going forward
+    "actions":[{"actor":"a001","kind":"take","amount":3},        # FORCE specific agent moves:
+               {"actor":"a001","kind":"talk","partners":["a002"]}]#  take/give/talk/attack/child
   }
+  System-style changes (agents/kill/pile/spawn/params) apply first, then "actions".
+  take/give resolve instantly; talk/attack/child play out via the model (claude -p).
   Agent ids (a001, a002, …) come from `redoland state` / `redoland timeline`.
 
 NOTES

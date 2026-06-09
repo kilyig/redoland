@@ -1,10 +1,10 @@
-"""Web UI server for Redoland (Concordia engine).
+"""Read-only web UI server for Redoland.
 
-Serves the whole runs/ directory so the UI can browse, START new worldlines,
-CONTINUE a worldline (run more years), FORK a past year into a new worldline, and
-inject events — plus per-year transcripts, metrics, and stat distributions. Running
-is long (claude -p), so run/fork/continue execute in a single background worker
-thread and stream turn-by-turn to live.jsonl (SSE). Browsing needs no model.
+Serves the whole runs/ directory: per-year transcripts, metrics, and stat
+distributions, with the in-progress year exposed as a tab that auto-updates as new
+action-commits land (the UI just polls — there is no live stream). The ONLY write
+action is Start/Pause a branch's run (one background worker at a time). Creating,
+forking, and injecting worldlines is done by the AI via the CLI, not here.
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import os
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -52,29 +51,42 @@ class Manager:
     def store(self, run):
         return Simulation.open(self.path(run), model_factory=None).store
 
+    def _years(self, s, b):
+        """Tagged (completed) years PLUS the in-progress year at the branch tip, so a
+        growing branch shows its current year as a tab that auto-updates."""
+        years = set(s.years_for_branch(b))
+        try:
+            tip_year = s.load_world(safe_branch(b)).year
+            if tip_year and tip_year > 0:
+                years.add(tip_year)
+        except Exception:
+            pass
+        return sorted(years)
+
     def tree(self, run):
         s = self.store(run)
         out = []
         for b in sorted(s.list_branches()):
-            years = s.years_for_branch(b)
+            years = self._years(s, b)
             if not years:
                 continue
-            tip = s.load_world(s.tag(b, years[-1]))
+            tip = s.load_world(safe_branch(b))     # the live tip (incl. in-progress year)
             out.append({"branch": b, "years": years, "tip": snapshot_metrics(tip)})
         return {"branches": out}
 
     def year(self, run, b, y):
         s = self.store(run)
-        years = s.years_for_branch(b)
-        if not years:
-            return {"events": [], "metrics": {}, "dist": {}}
-        raw = s.read_at(s.tag(b, years[-1]), f"events/year-{y}.jsonl")
+        tagged = s.years_for_branch(b)
+        # events come from the branch TIP (it holds every year's cumulative file, incl.
+        # the in-progress year as it grows) — that's what makes the tab auto-update.
+        raw = s.read_at(safe_branch(b), f"events/year-{y}.jsonl")
         events = [json.loads(l) for l in raw.splitlines() if l.strip()] if raw else []
-        w = s.load_world(s.tag(b, y)) if y in years else None
+        ref = s.tag(b, y) if y in tagged else safe_branch(b)   # completed -> tag; live -> tip
+        w = s.load_world(ref)
         return {"events": events,
-                "metrics": snapshot_metrics(w) if w else {},
-                "dist": distributions(w) if w else {},
-                "years": years}
+                "metrics": snapshot_metrics(w),
+                "dist": distributions(w),
+                "years": self._years(s, b)}
 
     # -- start / pause a branch ------------------------------------------ #
     def start(self, run, branch="main"):
@@ -125,61 +137,10 @@ def serve(runs_dir="runs", port=8000):
             n = int(self.headers.get("Content-Length", 0))
             return json.loads(self.rfile.read(n) or b"{}")
 
-        def _sse_live(self, run):
-            path = os.path.join(mgr.path(run), "live.jsonl")
-            try:
-                self.send_response(200)
-                self.send_header("Content-Type", "text/event-stream")
-                self.send_header("Cache-Control", "no-cache")
-                self.send_header("Connection", "keep-alive")
-                self.end_headers()
-            except Exception:
-                return
-            pos = 0
-            idle = 0
-            try:
-                while True:
-                    if os.path.exists(path):
-                        size = os.path.getsize(path)
-                        if size < pos:
-                            pos = 0
-                        if size > pos:
-                            with open(path) as f:
-                                f.seek(pos)
-                                data = f.read()
-                                pos = f.tell()
-                            for ln in data.splitlines():
-                                ln = ln.strip()
-                                if not ln:
-                                    continue
-                                try:
-                                    self.wfile.write(b"data: " + ln.encode() + b"\n\n")
-                                except Exception:
-                                    return
-                            try:
-                                self.wfile.flush()
-                            except Exception:
-                                return
-                            idle = 0
-                            time.sleep(0.2)
-                            continue
-                    idle += 1
-                    if idle % 10 == 0:
-                        try:
-                            self.wfile.write(b": keepalive\n\n")
-                            self.wfile.flush()
-                        except Exception:
-                            return
-                    time.sleep(0.3)
-            except Exception:
-                return
-
         def do_GET(self):
             u = urlparse(self.path)
             q = {k: v[0] for k, v in parse_qs(u.query).items()}
             try:
-                if u.path == "/api/live":
-                    return self._sse_live(q.get("run", ""))
                 if u.path in ("/", "/index.html"):
                     with open(os.path.join(_STATIC, "redoland.html"), "rb") as fh:
                         return self._send(fh.read(), ctype="text/html; charset=utf-8")
