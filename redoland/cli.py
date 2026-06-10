@@ -290,10 +290,18 @@ def build_parser():
 
 
 def main(argv=None):
+    import sys
     from .env import load_dotenv
+    from .model import ModelUnavailable
     load_dotenv()
     args = build_parser().parse_args(argv)
-    args.fn(args)
+    try:
+        args.fn(args)
+    except ModelUnavailable as e:
+        # the model went dark (out of credits / auth / CLI) — halt with a clear message
+        # rather than a traceback. Progress is safe: every completed step is committed.
+        print(f"\nHALTED: {e}", file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == "__main__":

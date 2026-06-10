@@ -66,7 +66,9 @@ def mkbody(w, aid, name, sex, **kw):
 
 def test_model_parsing():
     b = ClaudeCLIModel(thinking_tokens=0)
-    check(b._envelope('{"result":"hi","stop_reason":"end_turn"}') == "hi", "envelope unwraps result")
+    check(b._envelope('{"result":"hi","stop_reason":"end_turn"}') == (True, "hi"), "envelope unwraps result")
+    check(b._envelope('{"is_error":true,"result":"out of credits"}')[0] is False, "error envelope flagged as failure")
+    check(b._envelope("") == (True, ""), "exit-0 empty output is a valid empty answer")
     check(safe_json("```json\n{\"a\":1}\n```") == {"a": 1}, "safe_json strips fences")
     check(safe_json("nope") == {}, "safe_json falls back to {}")
     v = dummy_embedder("x")
@@ -144,6 +146,32 @@ def test_combat_resolves():
     kinds = [e["kind"] for e in w.year_events]
     check("blow" in kinds or "submit" in kinds, "combat resolves (blows or submission)")
     check(w.agents["a002"].hp < 100 or "submit" in kinds, "defender takes damage or submits")
+
+
+def test_run_halts_on_model_failure():
+    """A dead model (out of credits / failed CLI) HALTS the run with ModelUnavailable
+    instead of silently committing endless empty 'pass' steps."""
+    from redoland.model import ModelUnavailable, StubModel
+
+    class DeadModel(StubModel):
+        def sample_text(self, prompt, **k): raise ModelUnavailable("no response")
+        def sample_choice(self, prompt, responses, **k): raise ModelUnavailable("no response")
+
+    path = "/tmp/redoland_halt"; shutil.rmtree(path, ignore_errors=True)
+    sim = Simulation.create(path, Params(founders=3), seed=1,
+                            model_factory=lambda t: survival_stub(), randomize_choices=False)
+    before = len(sim.store.timeline("main", n=300))
+    sim2 = Simulation.open(path, lambda t: DeadModel())
+    sim2.store.checkout_branch("main")
+    raised = False
+    try:
+        sim2.run(years=2)
+    except ModelUnavailable:
+        raised = True
+    added = len(sim2.store.timeline("main", n=900)) - before
+    check(raised, "the run halts with ModelUnavailable when the model gives no response")
+    check(added <= 1, f"no wall of empty 'pass' commits piles up (added {added}, not ~600/year)")
+    shutil.rmtree(path, ignore_errors=True)
 
 
 def test_dead_food_yearend_to_next_pile():
@@ -531,7 +559,8 @@ def test_distributions():
 
 
 if __name__ == "__main__":
-    for fn in [test_model_parsing, test_engine_invariants, test_sole_actor_can_continue,
+    for fn in [test_model_parsing, test_run_halts_on_model_failure,
+               test_engine_invariants, test_sole_actor_can_continue,
                test_determinism,
                test_combat_resolves, test_dead_food_yearend_to_next_pile,
                test_combat_kill_loot_choice_and_spoils, test_convo_cap_scales_with_group,
