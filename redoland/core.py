@@ -11,7 +11,7 @@ import json
 import math
 import os
 import random
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, fields, asdict
 from typing import Any, Optional
 
 # --------------------------------------------------------------------------- #
@@ -46,14 +46,16 @@ class Params:
     child_health: int = 3
     max_maternal_age: int = 45    # a woman can bear children only up to this age (men: no limit)
     repro_rounds: int = 2
-    meeting_slots_per_agent: int = 10
-    # Conversations end when no one wants to speak next. Two bounds back that up:
-    #   convo_turns_per_person — a SOFT cap: a conversation may run at most this many
-    #     utterances per participant (so cap = turns_per_person × group size); trims the
-    #     repetitive tail that sets in once the substance is said. Scales with group size
-    #     so larger groups get room for everyone to weigh in.
-    #   convo_safety_cap — a hard runaway guard so a year cannot hang forever.
-    convo_turns_per_person: int = 6
+    # A single GLOBAL speaking budget: an agent may speak only this many times across the
+    # WHOLE year, counted per utterance (a conversation opener and every reply alike) and
+    # pooled over every conversation. Spent in `_say`; starting a talk needs >=1 left.
+    # Offering a child, being pulled into another's talk, and all non-talk actions are
+    # free. This replaces the old two-filter model (conversations-you-can-start +
+    # turns-per-conversation).
+    says_per_year: int = 10
+    # Conversations end when no one wants to (or can) speak next; the per-agent word
+    # budget above is what actually ends most talks. convo_safety_cap is the hard runaway
+    # guard so a year cannot hang forever even if budgets were huge.
     convo_safety_cap: int = 200
     # cognition ranges (continuous heritable dials)
     int_min: int = 1024
@@ -199,13 +201,19 @@ class Agent:
     memory_raw: list = field(default_factory=list)   # recent visible events [{eid, year, kind, who, text}]
     bore_this_year: bool = False               # females: already gave birth this year
     repro_done_year: bool = False              # made/accepted a child this year
+    says_used_year: int = 0                    # utterances this agent has spoken this year
+                                               # (across all conversations; capped at
+                                               # params.says_per_year)
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, d: dict) -> "Agent":
-        return cls(**d)
+        # Filter to known fields so worlds saved under an older schema (e.g. the retired
+        # `talks_started_year`) still load; missing fields fall back to their defaults.
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in d.items() if k in known})
 
     # cognition helpers ----------------------------------------------------- #
     @property
