@@ -35,6 +35,29 @@ class ModelUnavailable(RuntimeError):
     than let the failure be silently read as an empty 'pass' action — otherwise a dead
     model grinds the simulation forward on noise (600 empty passes per year)."""
 
+
+# Substrings that identify a usage/rate-limit pause rather than a hard failure.
+# When any of these appear in the CLI output the call is retried indefinitely
+# (with a longer sleep) rather than counted against the transient-error budget.
+_USAGE_LIMIT_PHRASES = (
+    "usage limit",
+    "rate limit",
+    "rate_limit",
+    "overloaded",
+    "too many requests",
+    "quota",
+    "billing",
+    "credits",
+    "capacity",
+    "529",
+    "429",
+)
+
+
+def _is_usage_limit(text: str) -> bool:
+    t = text.lower()
+    return any(p in t for p in _USAGE_LIMIT_PHRASES)
+
 import numpy as np
 
 from concordia.language_model import language_model
@@ -89,13 +112,15 @@ class ClaudeCLIModel(language_model.LanguageModel):
 
     def __init__(self, *, thinking_tokens: int = 0, model: str = "claude-haiku-4-5",
                  cli: Optional[str] = None, timeout: int = 180,
-                 retries: int = 3, retry_wait: float = 2.0):
+                 retries: int = 3, retry_wait: float = 2.0,
+                 usage_wait: float = 90.0):
         self._thinking = max(0, int(thinking_tokens))
         self._model = model
         self._cli = cli or os.environ.get("REDOLAND_CLAUDE_BIN", "claude")
         self._timeout = timeout
         self._retries = max(1, int(retries))        # transient blips get a few retries
         self._retry_wait = max(0.0, float(retry_wait))
+        self._usage_wait = max(10.0, float(usage_wait))   # pause when usage-limited
         self._think_choices = False    # gating CHOICEs are cheap unless a caller opts in
 
     @contextlib.contextmanager
@@ -112,39 +137,59 @@ class ClaudeCLIModel(language_model.LanguageModel):
 
     # -- core CLI call --------------------------------------------------- #
     def _run(self, prompt: str, *, thinking: Optional[int] = None) -> str:
-        """Call `claude -p` and return its text. A FAILED call (non-zero exit, error
-        envelope, timeout, or missing CLI) is retried a few times, then raised as
-        ModelUnavailable — NOT swallowed into an empty string, so the run halts instead
-        of disguising the failure as a 'pass'. A successful empty result is fine."""
+        """Call `claude -p` and return its text.
+
+        Transient failures (timeout, spawn error, generic API error) are retried
+        up to `self._retries` times with a short sleep.  Usage/rate-limit errors
+        are retried indefinitely with a longer `self._usage_wait` sleep so a
+        long-running simulation survives a quota reset without human intervention.
+        Neither retry path produces any simulation event — the step is simply
+        paused until the call succeeds.
+        """
         env = dict(os.environ)
         env.pop("ANTHROPIC_API_KEY", None)          # never the metered key
         env["MAX_THINKING_TOKENS"] = str(self._thinking if thinking is None else thinking)
         cmd = [self._cli, "-p", prompt, "--model", self._model,
                "--output-format", "json", "--no-session-persistence"]
         last = "unknown error"
-        for attempt in range(self._retries):
+        transient_fails = 0
+        while True:
             try:
                 proc = subprocess.run(cmd, capture_output=True, text=True,
                                       timeout=self._timeout, env=env)
             except subprocess.TimeoutExpired:
                 last = f"timed out after {self._timeout}s"
+                transient_fails += 1
             except Exception as e:                  # CLI missing / cannot spawn
                 last = f"could not run '{self._cli}': {e}"
+                transient_fails += 1
             else:
                 if proc.returncode == 0:
-                    ok, text = self._envelope(proc.stdout)
+                    raw_out = proc.stdout
+                    ok, text = self._envelope(raw_out)
                     if ok:
                         return text                 # success — empty text is valid
+                    # Error envelope from a zero-exit call — check for limits first
+                    if _is_usage_limit(raw_out):
+                        time.sleep(self._usage_wait)
+                        continue                    # don't count against transient budget
                     last = "error response from claude -p"
+                    transient_fails += 1
                 else:
                     msg = (proc.stderr or proc.stdout or "").strip().replace("\n", " ")
+                    if _is_usage_limit(msg):
+                        # Usage/rate limit — pause and retry indefinitely
+                        time.sleep(self._usage_wait)
+                        continue                    # don't count against transient budget
                     last = f"exit {proc.returncode}: {msg[:200]}"
-            if attempt + 1 < self._retries:
-                time.sleep(self._retry_wait)
-        raise ModelUnavailable(
-            f"claude -p ({self._model}) gave no usable response after {self._retries} "
-            f"attempts — {last}. Halting the run (likely out of usage credits, expired "
-            f"auth, or the CLI is unavailable) rather than committing empty 'pass' steps.")
+                    transient_fails += 1
+            if transient_fails >= self._retries:
+                raise ModelUnavailable(
+                    f"claude -p ({self._model}) gave no usable response after "
+                    f"{self._retries} transient attempts — {last}. Halting the run "
+                    f"(expired auth or the CLI is unavailable) rather than committing "
+                    f"empty 'pass' steps.")
+            time.sleep(self._retry_wait)
 
     @staticmethod
     def _envelope(stdout: str):

@@ -48,13 +48,22 @@ def _sim(name):
 
 def cmd_init(a):
     from .sim import Simulation
-    ratio = PRESETS.get(a.preset, a.ratio) if a.preset else a.ratio
     model = a.model or Params().model
-    params = Params(founders=a.founders, ratio=ratio, model=model)
+    # Default food model is the fountain F = max(food_base, round(food_floor_ratio*N)).
+    # Passing --ratio or --preset means the user wants the CLASSIC proportional model
+    # (F = round(ratio*N)), so we zero the fountain params to let `ratio` take effect.
+    if a.preset is not None or a.ratio is not None:
+        ratio = PRESETS.get(a.preset) if a.preset is not None else a.ratio
+        params = Params(founders=a.founders, ratio=ratio, model=model,
+                        food_base=0, food_floor_ratio=0.0)
+        food_desc = f"classic ratio {ratio}"
+    else:
+        params = Params(founders=a.founders, model=model)   # fountain defaults
+        food_desc = (f"fountain max({params.food_base}, round({params.food_floor_ratio}*N))")
     premise = (a.premise or "").strip()
     sim = Simulation.create(run_path(a.name), params, a.seed, make_model_factory(model),
                             premise=premise)
-    print(f"created run '{a.name}' (ratio {ratio}, {a.founders} founders, seed {a.seed}, "
+    print(f"created run '{a.name}' ({food_desc}, {a.founders} founders, seed {a.seed}, "
           f"model {model})" + (f"\n  stage: {premise}" if premise else ""))
     if a.years:
         sim.run(a.years, log=lambda y, w: print(f"  year {y}: {len(w.living())} living"))
@@ -192,14 +201,15 @@ def build_parser():
     s.add_argument("name", help="run name (a folder under runs/)")
     s.add_argument("--seed", type=int, default=1, help="RNG seed for the founding (default 1)")
     s.add_argument("--founders", type=int, default=6, help="number of founding villagers (default 6)")
-    s.add_argument("--ratio", type=float, default=Params().ratio,
-                   help="food-per-person ratio: pile = round(ratio * population) (default %(default)s)")
+    s.add_argument("--ratio", type=float, default=None,
+                   help="use the CLASSIC food model pile = round(ratio * population) at this "
+                        "ratio (overrides the default fountain model). Unset = fountain default.")
     s.add_argument("--premise", default=None,
                    help="set the stage: a premise/backstory for this world (e.g. "
                         "'Survivors of a flood that drowned the old kingdom'). Shown to "
                         "every agent and announced in year 1.")
     s.add_argument("--preset", choices=list(PRESETS), default=None,
-                   help="named scarcity preset (overrides --ratio)")
+                   help="named scarcity preset (classic ratio model; overrides --ratio)")
     s.add_argument("--model", default=None,
                    help="Claude model the village's agents think with, e.g. "
                         "claude-sonnet-4-6 or claude-haiku-4-5 (default %s). Stored with "

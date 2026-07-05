@@ -27,19 +27,23 @@ class Params:
     start_food: int = 2
     start_health: int = 3
     health_max: int = 3
-    # --- fountain / carrying-capacity food model (optional; overrides `ratio`) ---
+    # --- fountain / carrying-capacity food model (DEFAULT; overrides `ratio`) ---
     # If either is set, F = max(food_base, round(food_floor_ratio * N)):
-    #   food_base       — a fixed fountain output (abundance bootstrap, e.g. 25)
+    #   food_base       — a fixed fountain output (abundance bootstrap / floor)
     #   food_floor_ratio— grow food so food-per-person never drops below this
     #                     (e.g. 0.9 → mild-scarcity carrying-capacity equilibrium)
-    # With both 0, the classic F = round(N * ratio) is used.
-    food_base: int = 0
-    food_floor_ratio: float = 0.0
-    # F = round(N_living * ratio). v2 default 1.5: combat adds a large mortality
-    # channel, so the v1 "1.15" tuning is invalid — at 1.5/c=0.3 the FakeBackend
-    # village survives every seed over 50y (small, ~4-6, clan-feud-driven, with
-    # strength self-domesticating downward). Provisional; needs a proper ratio×c
-    # sweep with the real LLM backend. See PRESETS below.
+    # With both 0, the classic F = round(N * ratio) is used instead.
+    # Default is now the fountain model: F = max(15, round(0.9 * N)) — a flat 15-food
+    # floor while the village is small (≤~17), then it grows at 0.9/person. Set both
+    # to 0 to fall back to the classic proportional `ratio` model.
+    food_base: int = 15
+    food_floor_ratio: float = 0.9
+    # F = round(N_living * ratio) — the CLASSIC model, used ONLY when food_base AND
+    # food_floor_ratio are both 0 (they default nonzero above, so `ratio` is ignored
+    # by default). v2 value 1.5: combat adds a large mortality channel, so the v1
+    # "1.15" tuning is invalid — at 1.5/c=0.3 the FakeBackend village survives every
+    # seed over 50y. Provisional; needs a proper ratio×c sweep with the real LLM
+    # backend. See PRESETS below.
     ratio: float = 1.5
     child_cost: int = 3
     child_age: int = 21
@@ -52,7 +56,14 @@ class Params:
     # Offering a child, being pulled into another's talk, and all non-talk actions are
     # free. This replaces the old two-filter model (conversations-you-can-start +
     # turns-per-conversation).
-    says_per_year: int = 10
+    says_per_year: int = 6
+    # A separate GLOBAL cap on the total number of ACTIONS an agent may initiate in a year
+    # (a scramble move: take / give / open a talk / offer a child / start an attack). This
+    # is charged to the INITIATOR only — being pulled into someone's talk, being offered a
+    # child, defending/joining an attack, and trading blows all cost nothing (so no one can
+    # spend another agent's action budget). Speaking within a talk is governed separately by
+    # says_per_year; opening the talk is the one action that counts here. A `pass` is free.
+    actions_per_year: int = 10
     # Conversations end when no one wants to (or can) speak next; the per-agent word
     # budget above is what actually ends most talks. convo_safety_cap is the hard runaway
     # guard so a year cannot hang forever even if budgets were huge.
@@ -90,7 +101,7 @@ class Params:
     #             into NEXT year's pile (this year's claiming window is closed). A mid-year
     #             combat death drops into THIS year's pile (others can still grab it; it
     #             spoils at the year reset) — after the victor loots the body first.
-    dead_food: str = "lost"       # "lost" | "pile"
+    dead_food: str = "pile"       # "lost" | "pile" (default: the dead's food returns to the commons)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -204,6 +215,9 @@ class Agent:
     says_used_year: int = 0                    # utterances this agent has spoken this year
                                                # (across all conversations; capped at
                                                # params.says_per_year)
+    actions_used_year: int = 0                 # actions this agent has INITIATED this year
+                                               # (take/give/talk-open/child-offer/attack;
+                                               # capped at params.actions_per_year)
 
     def to_dict(self) -> dict:
         return asdict(self)

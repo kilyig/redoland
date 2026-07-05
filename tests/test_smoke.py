@@ -354,7 +354,11 @@ def test_worldline_fork_inject_replay():
     shutil.rmtree(path, ignore_errors=True)
     stub = survival_stub()
     mf = lambda t: stub
-    sim = Simulation.create(path, Params(founders=5, ratio=1.6, start_food=1), seed=7,
+    # This test exercises the classic proportional food model (it injects a ratio change
+    # to force a famine), so disable the fountain defaults (food_base/food_floor_ratio)
+    # that otherwise override `ratio`.
+    sim = Simulation.create(path, Params(founders=5, ratio=1.6, start_food=1,
+                                         food_base=0, food_floor_ratio=0.0), seed=7,
                             model_factory=mf, randomize_choices=False)
     sim.run(2)
     check(sim.store.years_for_branch("main") == [1, 2],

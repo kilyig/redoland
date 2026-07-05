@@ -131,6 +131,7 @@ class Engine:
             a.bore_this_year = False
             a.repro_done_year = False
             a.says_used_year = 0               # refill each agent's yearly speaking budget
+            a.actions_used_year = 0            # refill each agent's yearly ACTION budget
         if w.year == 1:            # year 1 is the start; announce the founding here
             if w.premise:          # the creator's "stage" — public to all from the start
                 w.record("narrate", "village", w.premise, phase="setup")
@@ -149,12 +150,17 @@ class Engine:
         just-acted agent still wants to act (sole survivor / last willing person),
         they continue rather than ending the year on the cooldown alone."""
         w = self.w
-        pool = [a for a in w.living() if a.id != last]
+        cap = w.params.actions_per_year
+        # An agent out of ACTIONS for the year can no longer INITIATE a move (though it can
+        # still be pulled into a talk / defend / join a fight — those don't go through here),
+        # so it drops out of the scramble draw. The year goes quiescent once no one both has
+        # actions left AND wants to act.
+        pool = [a for a in w.living() if a.id != last and a.actions_used_year < cap]
         w.rng.shuffle(pool)
         actor = next((a for a in pool if decide.willing(w, a)), None)
         if actor is None:
             la = w.agents.get(last) if last else None
-            if la and la.alive and decide.willing(w, la):
+            if la and la.alive and la.actions_used_year < cap and decide.willing(w, la):
                 actor = la
         return actor
 
@@ -169,6 +175,10 @@ class Engine:
         if action is None:
             action = decide.choose_action(w, actor)
         kind = action.get("kind", "pass")
+        # `acted` = did the initiator actually spend a move? Only a real initiation counts
+        # toward the yearly ACTION budget (charged once, below, to this actor only). A pass
+        # or a no-op (empty take, invalid target) costs nothing.
+        acted = False
         if kind == "take":
             amt = max(0, min(int(action.get("amount", 1) or 0), w.pile))
             if amt > 0:
@@ -177,6 +187,7 @@ class Engine:
                 w.record("take", actor.id,
                          f"{actor.name} takes {amt} from the pile (pile now {w.pile}).",
                          payload={"amount": amt})
+                acted = True
         elif kind == "give":
             tgt = w.agents.get(action.get("target"))
             amt = int(action.get("amount", 1) or 0)
@@ -185,20 +196,25 @@ class Engine:
                 tgt.food += amt
                 w.record("give", actor.id, f"{actor.name} gives {amt} food to {tgt.name}.",
                          payload={"target": tgt.id, "amount": amt})
+                acted = True
         elif kind == "child":
-            self._convo_chunk(actor, action)
+            # A child OFFER counts as an action for the OFFERER only (the partner being
+            # offered spends nothing — they never reach here). Even a doomed offer (stated
+            # and refused by the engine) is a spent move; only an invalid partner is a no-op.
+            acted = self._convo_chunk(actor, action)
         elif kind == "talk":
             # The speaking budget is GLOBAL and per-utterance, charged in `_say` (opener
             # and every reply alike). Here we only refuse to OPEN a talk when the actor has
             # no words left to speak the opener. Being pulled into someone else's talk,
             # offering a child (kind=="child"), and giving/taking/attacking never touch the
-            # budget. Inject-forced talks (agent_chosen=False) bypass the gate.
+            # speaking budget. Inject-forced talks (agent_chosen=False) bypass the gate.
             if agent_chosen and actor.says_used_year >= w.params.says_per_year:
                 w.record("pass", actor.id, "", audience=[actor.id])
                 return
             t = self._enter_talk(actor, action)
             if t is None:
                 return
+            acted = True                              # opening a talk is one action (opener only)
             if stepwise:
                 w.cursor["talk"] = t                  # the state machine drives it
                 w.cursor["phase"] = "talk"
@@ -210,6 +226,9 @@ class Engine:
             if tgt and tgt.alive and tgt.id != actor.id:
                 demand = int(action.get("demand", tgt.food) or 0)
                 f = self._enter_fight(actor, tgt, demand)
+                acted = True                          # STARTING the attack is the initiator's
+                                                      # action; defenders, co-attackers who join,
+                                                      # and the blows themselves cost nothing.
                 if stepwise:
                     w.cursor["fight"] = f             # the state machine drives it
                     w.cursor["phase"] = "fight"
@@ -218,6 +237,10 @@ class Engine:
                         pass
         else:
             w.record("pass", actor.id, "", audience=[actor.id])
+        # Charge the yearly action budget once, to the initiator, for a real scramble move.
+        # Inject-forced moves (agent_chosen=False) bypass the budget, like the speaking gate.
+        if acted and agent_chosen:
+            actor.actions_used_year += 1
 
     # -- reproduction proposal -------------------------------------------- #
     def _can_bear_child(self, proposer, partner, proposer_share):
@@ -249,10 +272,13 @@ class Engine:
         return True, ""
 
     def _convo_chunk(self, initiator, action):
+        """Make a child offer. Returns True if an offer was actually attempted (a real move
+        for the offerer — even a doomed one the engine refuses), False on an invalid partner
+        (a no-op that costs the offerer nothing)."""
         w = self.w
         partner = w.agents.get(action.get("partner"))
         if not partner or not partner.alive or partner.id == initiator.id:
-            return
+            return False
         grp = [initiator.id, partner.id]
         share = max(0, min(int(action.get("my_share", 1) or 0), w.params.child_cost))
         # Affordance gate: a doomed offer is never made — say exactly why and ask nothing.
@@ -261,7 +287,7 @@ class Engine:
             w.record("proposal", "village",
                      f"{initiator.name} cannot offer a child to {partner.name}: {reason}.",
                      audience=grp, phase="proposal")
-            return
+            return True
         w.record("proposal", initiator.id, f"{initiator.name} draws {partner.name} aside to talk.",
                  audience=grp, phase="proposal")
         w.record("propose", initiator.id,
@@ -279,6 +305,7 @@ class Engine:
         else:
             w.record("reject", partner.id, f"{partner.name} declines.",
                      audience=grp, phase="proposal")
+        return True
 
     # -- free-form group talk (a resumable, per-utterance state machine) --- #
     # The conversation is driven one utterance at a time. `_enter_talk` records the

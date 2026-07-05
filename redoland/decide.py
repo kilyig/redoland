@@ -93,28 +93,43 @@ def willing(world, a) -> bool:
 
 def choose_action(world, a) -> dict:
     left = max(0, world.params.says_per_year - getattr(a, "says_used_year", 0))
+    acts_left = max(0, world.params.actions_per_year - getattr(a, "actions_used_year", 0))
+    # A female past maternal age can never be a mother, and every child needs a mother, so
+    # she can never have a child at all — the "child" option is not offered to her (men have
+    # no age limit). This is the ONLY per-agent eligibility filter on the menu; every other
+    # doomed offer (kin, no food, partner already bore) is caught when the offer is made.
+    can_child = not (a.sex == "female" and a.age > world.params.max_maternal_age)
     # A single GLOBAL speaking budget per YEAR: every line you say in a conversation —
     # whether you start the talk or reply in one — spends one. It is pooled across all
     # conversations. Offering a child, or being pulled into someone else's talk, costs
-    # nothing (though you still spend a word each time you actually speak in that talk).
+    # nothing toward SPEAKING (though you still spend a word each time you actually speak).
+    kinds = ["take", "give"]
     if left > 0:
-        talk_note = (f"You can SPEAK {left} more time(s) this year — TOTAL, across every "
-                     f"conversation. Each line you say spends one, whether you start a talk "
-                     f"with \"talk\" or reply after being pulled into one. Offering a "
-                     f"\"child\" or any non-talk action is free.")
-        talk_kinds = "\"take\",\"give\",\"talk\",\"child\",\"attack\",\"pass\""
+        kinds.append("talk")
+    if can_child:
+        kinds.append("child")
+    kinds += ["attack", "pass"]
+    talk_kinds = ",".join(f'"{k}"' for k in kinds)
+    # The action budget: initiating any of take/give/talk/child/attack spends one; a pass is
+    # free; being pulled into a talk / defending / joining a fight cost nothing.
+    budget_note = (f"This year you can initiate {acts_left} more ACTION(s) "
+                   f"(a take/give/talk/child/attack — a pass is free).")
+    if left > 0:
+        speak_note = (f"You can SPEAK {left} more time(s) this year — TOTAL, across every "
+                      f"conversation. Each line you say spends one, whether you start a talk "
+                      f"with \"talk\" or reply after being pulled into one.")
     else:
-        talk_note = ("You have used all your words for the year, so \"talk\" is unavailable "
-                     "and you cannot speak even if pulled into a conversation — you can "
-                     "still take, give, offer a child, attack, or pass.")
-        talk_kinds = "\"take\",\"give\",\"child\",\"attack\",\"pass\""
+        speak_note = ("You have used all your words for the year, so \"talk\" is unavailable "
+                      "and you cannot speak even if pulled into a conversation.")
+    child_field = (" for child set partner (an opposite-sex, non-close-kin id) and my_share "
+                   "(how much of the child cost you pay);") if can_child else ""
     out = _json(world, a,
-        talk_note + "\n\nChoose ONE action now. JSON fields: kind (one of "
+        budget_note + " " + speak_note +
+        "\n\nChoose ONE action now. JSON fields: kind (one of "
         f"{talk_kinds}); for take set amount "
         "(N from the pile); for give set target (a person id) and amount; for talk set "
-        "partners (a list of person ids to pull aside); for child set partner (an "
-        "opposite-sex, non-close-kin id) and my_share (how much of the child cost you "
-        "pay); for attack set target (a person id) and demand (N food). Use ids exactly "
+        "partners (a list of person ids to pull aside);" + child_field +
+        " for attack set target (a person id) and demand (N food). Use ids exactly "
         "as shown in parentheses.")
     return out if isinstance(out, dict) else {}
 
