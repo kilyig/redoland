@@ -219,24 +219,31 @@ def test_combat_kill_loot_choice_and_spoils():
     check(w.agents["a002"].food == 0, "nothing is left on the body")
 
 
-def test_convo_cap_scales_with_group():
-    """The soft cap (convo_turns_per_person × group size) ends a talk where everyone
-    always wants to speak, and larger groups get proportionally more turns."""
+def test_global_say_budget_bounds_talk():
+    """Each agent may speak only says_per_year times across the WHOLE year, pooled over
+    every conversation. A talk where everyone always wants to speak ends once participants
+    run out of words; total utterances never exceed the summed budget, and the per-agent
+    counter is the bound (more speakers => more total words before exhaustion)."""
     stub = StubModel(choice_fn=lambda p, r: 0,       # want_to_speak -> 'Speak now'
                      text_fn=lambda p: "More." if "say your next line" in p.lower() else "")
-    def run(ids):
-        w = World(Params(convo_turns_per_person=2), RNG(1),
+    def run(ids, budget):
+        w = World(Params(says_per_year=budget), RNG(1),
                   model_factory=lambda t: stub, randomize_choices=False); w.year = 1
         for i, gid in enumerate(ids):
             mkbody(w, gid, "P" + gid, "male" if i % 2 else "female")
         eng = Engine(w); w.year_events = []
         eng._talk_chunk(w.agents[ids[0]], {"partners": ids[1:]})
-        return sum(1 for e in w.year_events if e["kind"] == "say")
-    two = run(["a001", "a002"])                       # cap = 2 × 2 = 4
-    three = run(["a001", "a002", "a003"])             # cap = 2 × 3 = 6
-    check(two <= 4 + 1, f"2-person talk is bounded by the soft cap (got {two})")
-    check(three <= 6 + 1, f"3-person talk is bounded by the soft cap (got {three})")
-    check(three > two, "larger groups get proportionally more turns")
+        says = sum(1 for e in w.year_events if e["kind"] == "say")
+        spent = sum(w.agents[i].says_used_year for i in ids)
+        return says, spent, w
+    two, two_spent, _ = run(["a001", "a002"], 3)           # 2 people × 3 words => at most 6
+    three, three_spent, w3 = run(["a001", "a002", "a003"], 3)   # 3 people × 3 words => at most 9
+    check(two <= 6, f"a 2-person talk is bounded by the summed word budget (got {two})")
+    check(three <= 9, f"a 3-person talk is bounded by the summed word budget (got {three})")
+    check(two == two_spent, "every utterance charged exactly one word from a speaker")
+    check(all(w3.agents[i].says_used_year <= 3 for i in ["a001", "a002", "a003"]),
+          "no agent ever speaks more than its yearly budget")
+    check(three > two, "more speakers means more total words before exhaustion")
 
 
 def test_model_persisted():
@@ -291,6 +298,39 @@ def test_max_maternal_age():
     check(len(set(w2.agents) - before2) == 1, "young mother + old father can still have a child")
 
 
+def test_child_offer_gated_on_food():
+    """A doomed offer is never made: if the partner can't afford the remaining share, the
+    'accept' affordance is never presented — the engine states the exact reason instead of
+    asking and then silently failing. choice_fn would ACCEPT, so only gating can block it."""
+    asked = {"child": 0}
+    def cf(prompt, responses):
+        if "offers to have a child" in prompt.lower():
+            asked["child"] += 1
+        return 0                                         # would Accept if ever asked
+    stub = StubModel(choice_fn=cf, text_fn=lambda p: "")
+    w = World(Params(child_cost=3), RNG(5), model_factory=lambda t: stub,
+              randomize_choices=False); w.year = 2
+    mkbody(w, "a001", "Eron", "male", food=0)            # offers 0 of 3...
+    mkbody(w, "a002", "Kesh", "female", food=1)          # ...partner can't cover the 3
+    eng = Engine(w); w.year_events = []
+    before = set(w.agents)
+    eng._convo_chunk(w.agents["a001"], {"partner": "a002", "my_share": 0})
+    check(set(w.agents) == before, "no child born when the partner can't afford the share")
+    check(asked["child"] == 0, "the partner is never asked to accept a doomed offer")
+    msgs = [e["text"] for e in w.year_events if e["kind"] == "proposal"]
+    check(any("cannot offer a child" in m and "food" in m for m in msgs),
+          f"an accurate food reason is recorded (got {msgs})")
+    # and a fully-funded offer to the same partner still goes through
+    w2 = World(Params(child_cost=3), RNG(5), model_factory=lambda t: stub,
+               randomize_choices=False); w2.year = 2
+    mkbody(w2, "a001", "Eron", "male", food=3)           # covers the whole cost
+    mkbody(w2, "a002", "Kesh", "female", food=0)
+    eng2 = Engine(w2); w2.year_events = []
+    before2 = set(w2.agents)
+    eng2._convo_chunk(w2.agents["a001"], {"partner": "a002", "my_share": 3})
+    check(len(set(w2.agents) - before2) == 1, "a fully-funded offer still produces a child")
+
+
 def test_group_talk():
     speak = {"n": 0}
     def cf(prompt, responses):
@@ -314,7 +354,11 @@ def test_worldline_fork_inject_replay():
     shutil.rmtree(path, ignore_errors=True)
     stub = survival_stub()
     mf = lambda t: stub
-    sim = Simulation.create(path, Params(founders=5, ratio=1.6, start_food=1), seed=7,
+    # This test exercises the classic proportional food model (it injects a ratio change
+    # to force a famine), so disable the fountain defaults (food_base/food_floor_ratio)
+    # that otherwise override `ratio`.
+    sim = Simulation.create(path, Params(founders=5, ratio=1.6, start_food=1,
+                                         food_base=0, food_floor_ratio=0.0), seed=7,
                             model_factory=mf, randomize_choices=False)
     sim.run(2)
     check(sim.store.years_for_branch("main") == [1, 2],
@@ -563,9 +607,10 @@ if __name__ == "__main__":
                test_engine_invariants, test_sole_actor_can_continue,
                test_determinism,
                test_combat_resolves, test_dead_food_yearend_to_next_pile,
-               test_combat_kill_loot_choice_and_spoils, test_convo_cap_scales_with_group,
+               test_combat_kill_loot_choice_and_spoils, test_global_say_budget_bounds_talk,
                test_model_persisted,
-               test_birth_crossover, test_max_maternal_age, test_group_talk,
+               test_birth_crossover, test_max_maternal_age,
+               test_child_offer_gated_on_food, test_group_talk,
                test_stepwise_talk_resumable, test_stepwise_talk_persists_through_git,
                test_stepwise_fight_resumable,
                test_worldline_fork_inject_replay, test_fork_at_action_and_inject,
