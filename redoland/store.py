@@ -42,7 +42,8 @@ class GitStore:
 
     def init_repo(self):
         os.makedirs(self.path, exist_ok=True)
-        if not os.path.isdir(os.path.join(self.path, ".git")):
+        # `.git` is a directory in a normal repo but a FILE in a worktree or submodule
+        if not os.path.exists(os.path.join(self.path, ".git")):
             r = subprocess.run(["git", "init", "-q", "-b", "main"], cwd=self.path,
                                capture_output=True, text=True)
             if r.returncode != 0:
@@ -75,6 +76,35 @@ class GitStore:
     def list_branches(self):
         out = self._git("for-each-ref", "--format=%(refname:short)", "refs/heads")
         return [b for b in out.splitlines() if b]
+
+    def adopt_clone(self):
+        """Make a fresh clone usable as a run. A `git clone` / submodule checkout carries
+        the other worldlines only as remote-tracking branches (origin/eron8, ...) — at most
+        the default branch exists locally — and a submodule's HEAD is detached, so
+        list_branches() (refs/heads) would miss them. Create a local branch for every
+        origin/* branch that has none, and if HEAD is detached exactly at the tip of
+        `main` (else the first such branch) attach it there. Idempotent and cheap: a repo
+        with no `origin` — every normal run — returns after a single git call; a worktree
+        shares refs/heads with its main repo, so nothing is created there either. A HEAD
+        detached by _free_branch_from_main is left alone (its branch has moved on in a
+        worktree, or is held by one, in which case the checkout simply fails)."""
+        if not os.path.exists(os.path.join(self.path, ".git")):
+            return
+        out = self._git("for-each-ref", "--format=%(refname:strip=3)", "refs/remotes/origin/",
+                        check=False)
+        remote = [b for b in out.splitlines() if b and b != "HEAD"]
+        if not remote:
+            return
+        local = set(self.list_branches())
+        for b in remote:
+            if b not in local:
+                subprocess.run(["git", "branch", "-q", b, f"origin/{b}"], cwd=self.path,
+                               capture_output=True, text=True)
+        if self._git("symbolic-ref", "-q", "HEAD", check=False) == "":     # detached
+            target = "main" if "main" in remote else remote[0]
+            if self._git("rev-parse", "HEAD") == self._git("rev-parse", target, check=False):
+                subprocess.run(["git", "checkout", "-q", target], cwd=self.path,
+                               capture_output=True, text=True)
 
     def read_at(self, ref: str, relpath: str) -> Optional[str]:
         r = subprocess.run(["git", "show", f"{ref}:{relpath}"], cwd=self.path,
