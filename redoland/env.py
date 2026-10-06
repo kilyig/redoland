@@ -1,9 +1,10 @@
 """Tiny stdlib .env loader (no python-dotenv dependency).
 
 Loads KEY=VALUE lines from .env.local then .env (first wins; never overrides a
-variable already set in the real environment). Called at CLI startup and when
-the Anthropic backend is constructed, so `ANTHROPIC_API_KEY` and the
-`REDOLAND_*` model settings in .env.local are picked up automatically.
+variable already set in the real environment). Called at CLI startup so settings
+in .env.local are picked up automatically. The only variable the code reads is
+`REDOLAND_CLAUDE_BIN` (path to the `claude` CLI, see model.py); there is no API
+key — inference is `claude -p` on its own login.
 """
 
 from __future__ import annotations
