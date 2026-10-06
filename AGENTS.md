@@ -45,7 +45,7 @@ change something, and watch how history diverges.
 | `inject <run> --branch B --narrate "…" --changes '<json>'` | inject an event (public to all) |
 | `diff <run> A yA B yB` | compare two branch/year snapshots |
 | `log <run>` / `metrics <run> --branch B --year Y` | branch summaries / full JSON metrics |
-| `serve [--port 8000]` | read-only web UI + per-branch Start/Pause (**many branches run at once**) |
+| `serve [--port 8000] [--host 127.0.0.1]` | read-only web UI + per-branch Start/Pause (**many branches run at once**); loopback only by default — `--host 0.0.0.0` exposes Start (paid inference, no auth) to anyone who can reach the port, needed e.g. inside a container viewed from the host |
 
 Agent ids (`a001`, `a002`, …) come from `state` and `timeline`.
 
@@ -108,4 +108,8 @@ $PY -m redoland diff     myrun main 12 elephant 12
 `store.py` (git: per-action commits, fork, timeline), `sim.py` (run/fork/inject/diff),
 `server.py` + `static/redoland.html` (the read-only UI), `cli.py` (these commands),
 `core.py` (Agent, Params, RNG, mortality). Tests: `python tests/test_smoke.py`
-(no network, deterministic stub). Runs live in `runs/` (git-ignored, local-only).
+(no network, deterministic stub). Runs live in `runs/` (git-ignored, local-only) —
+except the **sample run**, which ships as a git submodule at `runs/sample_run`
+(github.com/kilyig/redoland-sample-run). Clone with `git clone --recurse-submodules`,
+or run `git submodule update --init` in an existing clone; it then appears in the UI
+and the CLI (`log sample_run`) like any other run.
