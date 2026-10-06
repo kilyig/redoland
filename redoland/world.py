@@ -42,10 +42,14 @@ class World:
         self.next_eid = 0
         self.next_aid = 0
         self.year_events: list[dict] = []
-        # food held by those who died at year-end (natural/starvation) waiting to roll
-        # into NEXT year's pile (dead_food="pile"). Mid-year combat spoils go straight to
-        # the live pile instead, so they are claimable within the same year.
+        # food waiting to roll into NEXT year's pile: the stores of those who died at
+        # year-end (natural/starvation, dead_food="pile") and anything an inject adds to
+        # the pile while the year is closed (see add_pile_food). Mid-year combat spoils
+        # go straight to the live pile instead, so they are claimable within the year.
         self.next_pile_bonus = 0
+        # an inject's `pile: {"set": N}` made while the year is closed: the coming
+        # year's harvest is N instead of the formula. Consumed once by engine._setup.
+        self.next_pile_set = None
         self.event_sink = None                    # optional callable(ev) for live streaming
         # builds a per-agent LanguageModel given the agent's intelligence dial
         self.model_factory = model_factory
@@ -60,6 +64,25 @@ class World:
     def new_aid(self) -> str:
         self.next_aid += 1
         return f"a{self.next_aid:03d}"
+
+    # -- the pile --------------------------------------------------------- #
+    def year_closed(self) -> bool:
+        """True when this year's scramble is over: the cursor sits at 'year_end' (eat/
+        age/die is the next step) or 'year_start' (a new year opens next). Nothing reads
+        the pile again before engine._setup OVERWRITES it, so food meant for the commons
+        must be banked in next_pile_bonus or it is silently lost."""
+        return self.cursor.get("phase", "year_start") in ("year_end", "year_start")
+
+    def add_pile_food(self, amount: int) -> bool:
+        """Put `amount` food into the commons where it will actually be found: the live
+        pile mid-year, or next year's pile once the year is closed. Shared by natural
+        deaths (engine._die) and injected kills/pile changes (intervene) so the two
+        can't drift apart. Returns True when the food was banked for next year."""
+        if self.year_closed():
+            self.next_pile_bonus += amount
+            return True
+        self.pile += amount
+        return False
 
     # -- transcript + subjective memory ----------------------------------- #
     def record(self, kind, who, text="", audience="public", payload=None, phase="scramble"):

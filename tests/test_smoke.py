@@ -192,6 +192,133 @@ def test_dead_food_yearend_to_next_pile():
     check(w.next_pile_bonus == 0, "the carryover is consumed once spent")
 
 
+def _closed_year_world(dead_food="pile"):
+    """A world between years (cursor at the default 'year_start'): the next engine step
+    is _setup, which rebuilds the pile. Fixed harvest of 10; 2 stale food on the pile."""
+    stub = StubModel(choice_fn=lambda p, r: 0, text_fn=lambda p: "")
+    w = World(Params(dead_food=dead_food, food_base=10, food_floor_ratio=0.0, ratio=0), RNG(1),
+              model_factory=lambda t: stub, randomize_choices=False)
+    w.year = 3
+    mkbody(w, "a001", "X", "male", food=6)
+    mkbody(w, "a002", "Y", "female", food=1)
+    w.pile = 2
+    return w
+
+
+def test_inject_kill_routes_food_like_natural_death():
+    """An injected kill routes the dead's stores exactly like engine._die: banked for
+    NEXT year's pile while the year is closed (where _setup would overwrite w.pile),
+    straight into the live pile mid-year."""
+    from redoland.intervene import apply_changes
+    # (i) at a year boundary (phase 'year_start')
+    w = _closed_year_world()
+    eff = apply_changes(w, {"kill": ["a001"]})
+    check(not w.agents["a001"].alive and w.agents["a001"].food == 0, "injected kill at a boundary")
+    check(w.next_pile_bonus == 6 and w.pile == 2, "a boundary kill banks the stores for next year")
+    check(any("next year's pile" in e for e in eff), f"effects say where the food went: {eff}")
+    w.year_events = []
+    Engine(w)._setup()                                   # opens year 4
+    check(w.pile == 10 + 6, "the stores land in the new year's pile instead of being lost")
+    # (i') after the scramble closes (phase 'year_end'): _setup is still the next pile writer
+    w = _closed_year_world(); w.cursor["phase"] = "year_end"
+    apply_changes(w, {"kill": ["a001"]})
+    check(w.next_pile_bonus == 6 and w.pile == 2, "a kill at phase year_end banks the stores too")
+    # (ii) mid-year: the pile is live, the others can still take it
+    w = _closed_year_world(); w.cursor["phase"] = "scramble"
+    eff = apply_changes(w, {"kill": ["a001"]})
+    check(w.pile == 2 + 6 and w.next_pile_bonus == 0, "a mid-year kill drops the stores into THIS year's pile")
+    check(any("falls to the pile" in e for e in eff), f"effects say the food hit the pile: {eff}")
+    # hp -> 0 is a kill too, and goes the same way
+    w = _closed_year_world()
+    eff = apply_changes(w, {"agents": {"a001": {"hp": 0}}})
+    check(w.next_pile_bonus == 6 and any("dies" in e for e in eff), "hp=0 at a boundary banks the stores")
+    # dead_food='lost': nothing is banked, nothing hits the pile
+    w = _closed_year_world(dead_food="lost")
+    apply_changes(w, {"kill": ["a001"]})
+    check(w.next_pile_bonus == 0 and w.pile == 2 and w.agents["a001"].food == 0,
+          "dead_food='lost' still loses an injected kill's stores")
+
+
+def test_inject_pile_between_years_targets_coming_year():
+    """`pile` set/add while the year is closed aims at the COMING year's pile (set
+    replaces the harvest, add is carried over on top) — not at the stale w.pile that
+    _setup is about to overwrite. Mid-year behaviour is unchanged."""
+    from redoland.intervene import apply_changes
+    # the earthquake: set 0 at a year boundary
+    w = _closed_year_world()
+    eff = apply_changes(w, {"pile": {"set": 0}})
+    check(w.pile == 2 and w.next_pile_set == 0, "a boundary 'set' is recorded for the coming year")
+    check(any("when the new year opens" in e and "0 food" in e for e in eff), f"effects say so: {eff}")
+    w.year_events = []; Engine(w)._setup()
+    check(w.pile == 0, "the new year opens with an empty pile (the earthquake took effect)")
+    check(w.next_pile_set is None, "the override is consumed once")
+    w.year += 1; w.year_events = []; Engine(w)._setup()
+    check(w.pile == 10, "the year after gets the normal harvest again")
+    # add at a boundary -> carried over on top of the harvest
+    w = _closed_year_world()
+    eff = apply_changes(w, {"pile": {"add": 5}})
+    check(w.pile == 2 and w.next_pile_bonus == 5, "a boundary 'add' is banked for the coming year")
+    check(any("plus 5 carried over" in e for e in eff), f"effects mention the carry-over: {eff}")
+    w.year_events = []; Engine(w)._setup()
+    check(w.pile == 15, "the carried-over food lands in the new year's pile")
+    check(any("5 of it carried over" in ev["text"] for ev in w.year_events),
+          "the year-opening narration accounts for the carry-over")
+    # set + add compose, and the --pile shortcut form (a bare int) is a set
+    w = _closed_year_world()
+    apply_changes(w, {"pile": {"set": 4, "add": 5}})
+    w.year_events = []; Engine(w)._setup()
+    check(w.pile == 9, "boundary set+add: harvest 4 plus 5 carried over")
+    w = _closed_year_world()
+    apply_changes(w, {"pile": 7})
+    check(w.next_pile_set == 7, "a bare int is a 'set'")
+    # a boundary set keeps the dead's banked stores (they are not part of the harvest)
+    w = _closed_year_world(); w.next_pile_bonus = 3
+    apply_changes(w, {"pile": {"set": 0}})
+    w.year_events = []; Engine(w)._setup()
+    check(w.pile == 3, "set replaces the harvest; banked stores still roll in")
+    # the carry-over is honoured under dead_food='lost' as well (only injects write it then)
+    w = _closed_year_world(dead_food="lost")
+    apply_changes(w, {"pile": {"add": 5}})
+    w.year_events = []; Engine(w)._setup()
+    check(w.pile == 15, "an injected carry-over lands even when dead_food='lost'")
+    # mid-year: the live pile changes right away
+    w = _closed_year_world(); w.cursor["phase"] = "scramble"
+    eff = apply_changes(w, {"pile": {"set": 0}})
+    check(w.pile == 0 and w.next_pile_set is None, "a mid-year 'set' empties the live pile")
+    check(any("now holds 0 food" in e for e in eff), f"mid-year effects unchanged: {eff}")
+    w = _closed_year_world(); w.cursor["phase"] = "scramble"
+    apply_changes(w, {"pile": {"add": 5}})
+    check(w.pile == 7 and w.next_pile_bonus == 0, "a mid-year 'add' goes onto the live pile")
+
+
+def test_inject_between_years_persists_through_git():
+    """The real path: inject at a year boundary via Simulation (load -> apply -> commit),
+    then run the next year from the committed state. The kill's stores and the pile
+    change must both survive the git round trip and shape the new year's pile."""
+    path = "/tmp/redoland_cc_boundary_inject"
+    shutil.rmtree(path, ignore_errors=True)
+    stub = survival_stub()
+    sim = Simulation.create(path, Params(founders=4, start_food=3, food_base=10,
+                                         food_floor_ratio=0.0, ratio=0),
+                            seed=7, model_factory=lambda t: stub, randomize_choices=False)
+    w0 = sim.store.load_world()
+    check(w0.cursor["phase"] == "year_start", "genesis sits at a year boundary")
+    victim = w0.living()[0].id
+    res = sim.inject("main", changes={"kill": [victim], "pile": {"set": 0, "add": 2}},
+                     narrative="An earthquake strikes before the first harvest.")
+    w1 = sim.store.load_world()
+    check(w1.next_pile_set == 0 and w1.next_pile_bonus == 3 + 2 and w1.pile == 0,
+          "override + carry-over (dead's 3 food + 2 added) are committed, not the stale pile")
+    check("0 food plus 5 carried over" in res["text"], f"the public event says what happens: {res['text']}")
+    sim.run(1)
+    wy1 = sim.store.load_world(sim.store.tag("main", 1))
+    check(any(ev["kind"] == "narrate" and "Year 1: 5 food appears" in ev["text"]
+              and "5 of it carried over" in ev["text"] for ev in wy1.year_events),
+          "year 1 opens with exactly the injected pile (0 harvest + 5 carried over)")
+    check(wy1.next_pile_set is None, "the override does not linger past the year it shaped")
+    shutil.rmtree(path, ignore_errors=True)
+
+
 def test_combat_kill_loot_choice_and_spoils():
     """A slain target: the victor LOOTS a chosen amount (not capped by the demand) and
     the remainder drops into THIS year's pile (dead_food='pile')."""
@@ -676,6 +803,9 @@ if __name__ == "__main__":
                test_engine_invariants, test_sole_actor_can_continue,
                test_determinism,
                test_combat_resolves, test_dead_food_yearend_to_next_pile,
+               test_inject_kill_routes_food_like_natural_death,
+               test_inject_pile_between_years_targets_coming_year,
+               test_inject_between_years_persists_through_git,
                test_combat_kill_loot_choice_and_spoils, test_global_say_budget_bounds_talk,
                test_model_persisted,
                test_birth_crossover, test_max_maternal_age,

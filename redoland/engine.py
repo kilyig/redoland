@@ -120,12 +120,17 @@ class Engine:
             f = max(p.food_base, round(p.food_floor_ratio * n))
         else:
             f = round(n * p.ratio)
-        # food left by those who died at the end of last year rolls into this year's
-        # pile (dead_food="pile"); unclaimed pile food otherwise just spoils on reset.
-        bonus = 0
-        if p.dead_food == "pile" and w.next_pile_bonus:
-            bonus = w.next_pile_bonus
-            w.next_pile_bonus = 0
+        # an inject made while the year was closed may have set the coming harvest
+        if w.next_pile_set is not None:
+            f = w.next_pile_set
+            w.next_pile_set = None
+        # food banked for this year rolls into the pile: the stores of those who died at
+        # the end of last year (dead_food="pile") and anything injected into the pile
+        # while the year was closed (World.add_pile_food). Only those two paths write
+        # next_pile_bonus, so it is honoured whatever dead_food is. Unclaimed pile food
+        # otherwise just spoils on reset.
+        bonus = w.next_pile_bonus
+        w.next_pile_bonus = 0
         w.pile = f + bonus
         for a in w.living():
             a.bore_this_year = False
@@ -137,7 +142,7 @@ class Engine:
                 w.record("narrate", "village", w.premise, phase="setup")
             w.record("narrate", "village",
                      f"The village is founded by {n} people.", phase="setup")
-        extra = f" ({bonus} of it left by those who passed last year)" if bonus else ""
+        extra = f" ({bonus} of it carried over from last year)" if bonus else ""
         w.record("narrate", "village",
                  f"Year {w.year}: {w.pile} food appears in the pile for {n} people{extra}.",
                  phase="setup")
@@ -672,7 +677,7 @@ class Engine:
                 pass               # food stays on the body; the fight resolution loots it
                                    # (victor first) and drops the rest into THIS year's pile
             else:                  # year-end death: stores roll into NEXT year's pile
-                w.next_pile_bonus += a.food
+                w.add_pile_food(a.food)     # (banked: the year is closed by now)
                 a.food = 0
         verb = {"starvation": "starves", "combat": "is killed", "natural": "dies"}[cause]
         w.record("death", "village", f"{a.name} {verb} at age {a.age}.",

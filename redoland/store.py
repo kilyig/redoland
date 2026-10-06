@@ -125,7 +125,8 @@ class GitStore:
             "rng_state": world.rng.get_state(), "params": world.params.to_dict(),
             "cursor": world.cursor,            # resumable run position (phase/last/steps)
             "premise": world.premise,          # the world's "stage" (creator's backstory)
-            "next_pile_bonus": world.next_pile_bonus,   # dead food rolling into next year
+            "next_pile_bonus": world.next_pile_bonus,   # food rolling into next year's pile
+            "next_pile_set": world.next_pile_set,       # injected override of next harvest
         }
         self._write_json("meta.json", meta)
         adir = os.path.join(self.path, "agents")
@@ -162,6 +163,7 @@ class GitStore:
         world.next_eid = meta["next_eid"]
         world.next_aid = meta["next_aid"]
         world.next_pile_bonus = meta.get("next_pile_bonus", 0)
+        world.next_pile_set = meta.get("next_pile_set")        # absent in older runs -> None
         world.used_names = set(meta["used_names"])
         # resumable cursor — default to a clean year boundary (so old year-only
         # commits, which have no cursor, continue correctly into the next year).

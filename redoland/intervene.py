@@ -18,6 +18,13 @@ explanation with these effects into every living agent's memory.
     "spawn":  [{"sex":"female","age":25,"strength":60,"food":4, ...}],
     "params": {"ratio": 0.5}                                       # rule change
   }
+
+Timing: between two years (the cursor at 'year_end'/'year_start' — e.g. right after a
+`<branch>-y<N>` tag, or right after `init`) the pile is dead: the next engine step,
+_setup, rebuilds it. So a kill's stores and any `pile` change made then are aimed at
+the COMING year's pile ("set" replaces its harvest, "add" is carried over on top),
+exactly as a year-end death's food is. Mid-year they hit the live pile. The effects
+text says which happened.
 """
 
 from __future__ import annotations
@@ -50,8 +57,7 @@ def apply_changes(world, changes: dict) -> list[str]:
             elif k == "hp":
                 a.hp = _clampi(val, 0, p.hp_max)
                 if a.hp <= 0:
-                    _kill(w, a)
-                    effects.append(f"{a.name} dies")
+                    effects.append(_kill(w, a))
                 else:
                     effects.append(f"{a.name}'s HP is now {int(a.hp)}")
 
@@ -59,20 +65,37 @@ def apply_changes(world, changes: dict) -> list[str]:
     for aid in (changes.get("kill") or []):
         a = w.agents.get(aid)
         if a and a.alive:
-            _kill(w, a)
-            effects.append(f"{a.name} dies")
+            effects.append(_kill(w, a))
 
     # -- the plaza pile --------------------------------------------------- #
     pile = changes.get("pile")
     if pile is not None:
+        set_to = add = None
         if isinstance(pile, dict):
             if "set" in pile:
-                w.pile = max(0, int(pile["set"]))
+                set_to = max(0, int(pile["set"]))
             if "add" in pile:
-                w.pile = max(0, w.pile + int(pile["add"]))
+                add = int(pile["add"])
         else:
-            w.pile = max(0, int(pile))
-        effects.append(f"the plaza now holds {w.pile} food")
+            set_to = max(0, int(pile))
+        if w.year_closed():
+            # The year is over: engine._setup rebuilds the pile next, so a change to
+            # w.pile here would vanish. Aim it at the coming year instead — "set"
+            # replaces that year's harvest, "add" is carried over on top of it.
+            if set_to is not None:
+                w.next_pile_set = set_to
+            if add is not None:
+                w.next_pile_bonus = max(0, w.next_pile_bonus + add)
+            base = (f"{w.next_pile_set} food" if w.next_pile_set is not None
+                    else "the usual harvest")
+            extra = f" plus {w.next_pile_bonus} carried over" if w.next_pile_bonus else ""
+            effects.append(f"the plaza will hold {base}{extra} when the new year opens")
+        else:
+            if set_to is not None:
+                w.pile = set_to
+            if add is not None:
+                w.pile = max(0, w.pile + add)
+            effects.append(f"the plaza now holds {w.pile} food")
 
     # -- spawn newcomers -------------------------------------------------- #
     for spec in (changes.get("spawn") or []):
@@ -89,16 +112,24 @@ def apply_changes(world, changes: dict) -> list[str]:
     return effects
 
 
-def _kill(w, a):
+def _kill(w, a) -> str:
+    """Kill `a` and return the effect text. The dead's stores are routed exactly like a
+    natural death's (engine._die): into the live pile mid-year, banked for NEXT year's
+    pile when the year is closed (World.add_pile_food) — never left to be overwritten."""
     a.alive = False
     a.death_year = w.year
     a.death_cause = "injected"
     a.hp = 0
+    text = f"{a.name} dies"
     if w.params.dead_food == "pile":
-        w.pile += a.food
+        if a.food:
+            banked = w.add_pile_food(a.food)
+            text += (f" ({a.food} food rolls into next year's pile)" if banked
+                     else f" ({a.food} food falls to the pile)")
         a.food = 0
     elif w.params.dead_food == "lost":
         a.food = 0
+    return text
 
 
 def _spawn(w, spec: dict) -> Agent:
