@@ -1,4 +1,6 @@
-"""Observation metrics over a world snapshot (MVP_PLAN.md §11)."""
+"""Observation metrics over a world snapshot: population and deaths by cause, food
+total and Gini, mean traits/strength/HP/cognition, lineage depth, and per-agent
+stat distributions for the UI."""
 
 from __future__ import annotations
 

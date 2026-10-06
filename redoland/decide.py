@@ -1,4 +1,4 @@
-"""Decision helpers — the port of the old backend's decision interface.
+"""Decision helpers — the engine's only "ask the agent" interface.
 
 Every agent decision flows through its Concordia mind: `world.mind(id).act(spec)`.
 Design choices:

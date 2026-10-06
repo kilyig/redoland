@@ -7,8 +7,8 @@ Two implementations of `concordia.language_model.language_model.LanguageModel`:
                     env) and never uses the anthropic SDK, so a full run costs $0 on
                     the metered key. The per-agent "intelligence" dial is the heritable
                     thinking-token budget, passed via the MAX_THINKING_TOKENS env var.
-* StubModel       — deterministic, scriptable. Used ONLY in tests (the FakeBackend
-                    analog); never calls the network, never the metered key.
+* StubModel       — deterministic, scriptable. Used ONLY in tests; never calls the
+                    network, never the metered key.
 
 Also provides `dummy_embedder`: Concordia's AssociativeMemoryBank / Simulation want a
 sentence embedder, but Redoland uses its own lightweight text memory and never calls

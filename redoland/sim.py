@@ -1,10 +1,10 @@
 """Simulation orchestration (Concordia engine): ties engine + git store together
 and implements the worldline operations (run / fork / inject / replay / diff).
 
-This is the "redo" layer: a year is a commit; fork branches from a past year's
-tag; inject mutates the restored world at a branch tip; replay runs forward —
-producing a divergent timeline. Reuses the standalone design verbatim; only the
-serialized payload (bodies + globals) and the model wiring differ.
+This is the "redo" layer: every step is a commit (completed years are also tagged);
+fork branches from any action-commit or a past year's tag; inject mutates the
+restored world at a branch tip; replay/run advance it — producing a divergent
+timeline. Only the bodies + world globals are serialized; minds are rebuilt on load.
 """
 
 from __future__ import annotations

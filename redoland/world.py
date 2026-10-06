@@ -1,15 +1,15 @@
 """World container for the Concordia-based engine.
 
-Design (see CONCORDIA_MIGRATION_PLAN.md §2.1): every villager is a pair —
+Design: every villager is a pair —
   * a BODY: a plain `core.Agent` dataclass (numeric + genome state) that the
     deterministic engine mutates directly. This is the serializable state.
   * a MIND: a Concordia `EntityAgent` that produces the agent's decisions through
     Concordia's component→prompt→model→action pipeline. Minds are rebuilt from
     bodies on load, so only bodies + world globals are checkpointed.
 
-Keeping bodies as `core.Agent` lets the combat/crossover/year-end logic port over
-almost unchanged; only "ask the agent" calls change (backend.X → decide.X, which
-calls mind.act()).
+Keeping bodies as plain `core.Agent` dataclasses keeps the combat/crossover/year-end
+logic free of Concordia; the only "ask the agent" path is `decide.X(world, a)`, which
+calls mind.act().
 """
 
 from __future__ import annotations

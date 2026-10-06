@@ -1,8 +1,9 @@
 """Smoke tests for the Concordia-based engine — run with:
-    python3 tests/test_cc.py        (no pytest, no network, no metered key)
+    python tests/test_smoke.py      (no pytest, no network, no metered key)
 
 Every decision is driven by a deterministic scripted StubModel, so these test the
-engine/worldline mechanics, not the LLM. Mirrors the standalone smoke suite.
+engine physics, the git store / worldline operations (per-action commits, fork,
+inject, replay, worktrees), and the UI server's job registry — not the LLM.
 """
 
 import os
