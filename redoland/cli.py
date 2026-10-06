@@ -183,8 +183,8 @@ NOTES
   * One writer per BRANCH. The web UI can run many branches at once (each in its own
     git worktree), but don't `run`/`inject` a branch from here while the UI is running
     that same branch. Different branches in parallel are fine.
-  * Don't restart a run while a year is well underway — the uncommitted in-progress
-    year is discarded. Committed years (git) are always safe.
+  * Every step is committed, so stopping a run loses nothing: the next `run` resumes
+    mid-year from the last committed step (the cursor is part of the world state).
   * The web UI (`redoland serve`) is read-only + a per-branch Start/Pause button;
     creating and forking worldlines is done here, via this CLI.
 """
