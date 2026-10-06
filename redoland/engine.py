@@ -2,8 +2,7 @@
 
 Deterministic physics (food, Lanchester combat, satiation, HP, SSA mortality,
 crossover) computed in code here; every *decision* is delegated to an agent's
-Concordia mind via the `decide` helpers. Ported from the standalone engine — the
-only change is backend.X(world, a, rng) → decide.X(world, a). The engine's own
+Concordia mind via the `decide` helpers (decide.X(world, a)). The engine's own
 randomness uses the seeded, checkpointed `world.rng` so physics replays
 deterministically (LLM choices are never deterministic).
 """

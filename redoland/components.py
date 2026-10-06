@@ -3,8 +3,7 @@
 One Concordia `ActionSpecIgnored` component assembles the entire decision context
 for a villager each time it acts: persona + drives + world rules + exact survival
 mechanics + its own state + everyone else's exact public state + its scaled memory.
-This is the port of the old backend.system_prompt + _situation + _assemble_memory,
-rebuilt fresh each act so kin/notes/stats are always current. It contributes NO
+It is rebuilt fresh each act so kin/notes/stats are always current. It contributes NO
 behavioural nudges — it states the rules and facts; the agent decides.
 """
 

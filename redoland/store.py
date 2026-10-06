@@ -1,8 +1,8 @@
 """Git-backed world store (Concordia engine).
 
-Identical git mechanics to the standalone store: a run is its own git repo under
-runs/<name>/, each year a commit tagged `<branch>-y<N>`, forking = a git branch
-from a past year's tag. Only the *bodies* (core.Agent) + world globals are
+A run is its own git repo under runs/<name>/; every agent action is a commit and
+each completed year is additionally tagged `<branch>-y<N>`; forking = a git branch
+from any action-commit or a year tag. Only the *bodies* (core.Agent) + world globals are
 serialized; the Concordia minds are rebuilt from bodies on load (lazily, via
 world.mind()). The model_factory is injected at load time so a restored world can
 think again — this is the substrate of fork/inject/replay.

@@ -2,7 +2,7 @@
 
 Everything here is pure-stdlib and JSON-serializable so a whole world can be
 checkpointed into a git commit and replayed deterministically (for the engine's
-own randomness — LLM sampling is never deterministic; see MVP_PLAN.md §7.3).
+own randomness — LLM sampling is never deterministic).
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from dataclasses import dataclass, field, fields, asdict
 from typing import Any, Optional
 
 # --------------------------------------------------------------------------- #
-# Parameters (defaults reflect the decisions in MVP_PLAN.md §2 and §13).       #
+# Parameters (simulation rules; stored with each world so a run keeps its own).  #
 # --------------------------------------------------------------------------- #
 
 
@@ -41,9 +41,9 @@ class Params:
     # F = round(N_living * ratio) — the CLASSIC model, used ONLY when food_base AND
     # food_floor_ratio are both 0 (they default nonzero above, so `ratio` is ignored
     # by default). v2 value 1.5: combat adds a large mortality channel, so the v1
-    # "1.15" tuning is invalid — at 1.5/c=0.3 the FakeBackend village survives every
-    # seed over 50y. Provisional; needs a proper ratio×c sweep with the real LLM
-    # backend. See PRESETS below.
+    # "1.15" tuning is invalid — at 1.5/c=0.3 a scripted-stub (no-LLM) village survives
+    # every seed over 50y. Provisional; needs a proper ratio×c sweep with the real
+    # model. See PRESETS below.
     ratio: float = 1.5
     child_cost: int = 3
     child_age: int = 21
@@ -77,7 +77,7 @@ class Params:
     big5_sigma: float = 8.0
     int_sigma: float = 600.0
     mem_sigma: float = 3000.0
-    # --- v2 force-and-combat model (see MVP_PLAN_V2.md) ---
+    # --- v2 force-and-combat model (Strength + HP pool + Lanchester damage) ---
     strength_sigma: float = 8.0   # crossover sigma for Strength (0..100)
     hp_max: int = 100             # combat life pool
     hp_recovery: int = 25         # HP healed per year IF fed
@@ -115,8 +115,9 @@ class Params:
 BIG5 = ["openness", "conscientiousness", "extraversion", "agreeableness", "neuroticism"]
 
 # Named F/N presets (political-intensity + selection dial). Re-tuned for the v2
-# combat model (FakeBackend, 40-50y x 6-8 seeds) — combat dominates mortality, so
-# survivable ratios are higher than v1's. Provisional until a real-backend sweep:
+# combat model (scripted stub, no LLM; 40-50y x 6-8 seeds) — combat dominates
+# mortality, so survivable ratios are higher than v1's. Provisional until a sweep
+# with the real model:
 #   crisis    1.20 — frequent extinction; brutal clan-feud collapse
 #   tense     1.40 — usually survives; tiny, violent
 #   stable    1.50 — survives every seed; small (~4-6) clan-feud village  [DEFAULT]
