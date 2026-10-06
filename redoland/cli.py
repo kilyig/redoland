@@ -293,8 +293,11 @@ def build_parser():
                                    "live stream, stat distributions, and a Start/Pause button.")
     s.add_argument("--runs-dir", default="runs", help="directory of runs to serve (default ./runs)")
     s.add_argument("--port", type=int, default=8000, help="port (default 8000)")
-    s.add_argument("--host", default="0.0.0.0",
-                   help="bind address (default 0.0.0.0 — reachable from the host in a container)")
+    s.add_argument("--host", default="127.0.0.1",
+                   help="bind address (default 127.0.0.1, loopback only). The UI has no auth "
+                        "and Start runs paid claude -p inference, so --host 0.0.0.0 exposes "
+                        "Start to anyone who can reach the port; use it only when needed, "
+                        "e.g. running inside a container and viewing from the host")
     s.set_defaults(fn=cmd_serve)
     return p
 

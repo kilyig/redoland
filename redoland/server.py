@@ -67,7 +67,8 @@ class Manager:
     def list_runs(self):
         out = []
         for n in sorted(os.listdir(self.runs_dir)):
-            if os.path.isdir(os.path.join(self.runs_dir, n, ".git")):
+            # `.git` is a dir in a normal run repo, a FILE in a submodule/worktree checkout
+            if os.path.exists(os.path.join(self.runs_dir, n, ".git")):
                 out.append(n)
         return out
 
@@ -172,7 +173,7 @@ class Manager:
         return log
 
 
-def serve(runs_dir="runs", port=8000, host="0.0.0.0"):
+def serve(runs_dir="runs", port=8000, host="127.0.0.1"):
     mgr = Manager(runs_dir)
 
     class Handler(BaseHTTPRequestHandler):
@@ -224,8 +225,9 @@ def serve(runs_dir="runs", port=8000, host="0.0.0.0"):
             except Exception as e:  # noqa
                 return self._send({"error": str(e)}, 500)
 
-    # bind 0.0.0.0 by default so the UI is reachable from the host when running in a
-    # container (via published/forwarded ports), not only from inside it.
+    # Loopback by default: there is no authentication, and POST /api/start triggers paid
+    # `claude -p` inference. Pass host="0.0.0.0" to expose it (e.g. when running inside
+    # a container and viewing from the host) — anyone who can reach the port can Start.
     httpd = ThreadingHTTPServer((host, port), Handler)
     print(f"Redoland UI: http://{host}:{port}  (runs dir: {mgr.runs_dir})")
     print("Ctrl-C to stop.")

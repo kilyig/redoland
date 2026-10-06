@@ -562,6 +562,75 @@ def test_concurrent_branches_via_worktrees():
     shutil.rmtree(path, ignore_errors=True); shutil.rmtree(wt_root, ignore_errors=True)
 
 
+def test_fresh_clone_adopted_as_run():
+    """A fresh clone (what `git clone --recurse-submodules` leaves in runs/sample_run) has
+    the other worldlines only as origin/* remote-tracking branches — at most the default
+    branch locally — and a detached HEAD. Opening it as a run must create the missing local
+    branches and put HEAD on main — idempotently, and never on a normal run repo."""
+    import subprocess
+    from redoland.store import GitStore
+    base = "/tmp/redoland_clone"; shutil.rmtree(base, ignore_errors=True)
+    src, origin, sub, bare_clone = (os.path.join(base, d) for d in ("src", "origin.git", "sub", "bare"))
+    mf = lambda t: survival_stub()
+    sim = Simulation.create(src, Params(founders=3, ratio=1.6, start_food=1), seed=4,
+                            model_factory=mf, randomize_choices=False)
+    sim.run(1)
+    sim.fork("main", 1, "eron8")
+    sim.store.checkout_branch("main")                          # default branch = main
+    g = lambda *a, **k: subprocess.run(["git", *a], capture_output=True, text=True, check=True, **k)
+    g("clone", "-q", "--bare", src, origin)
+    # (1) the submodule shape: local main only, eron8 remote-only, HEAD detached at main's tip
+    g("clone", "-q", origin, sub)
+    g("checkout", "-q", "--detach", cwd=sub)
+    pre = GitStore(sub, model_factory=mf, randomize_choices=False)
+    check(pre.list_branches() == ["main"] and pre.current_branch() == "HEAD",
+          "submodule-style clone: only the default branch is local, HEAD detached")
+    s = Simulation.open(sub, mf).store
+    check(sorted(s.list_branches()) == ["eron8", "main"], "opening the clone creates a local branch per origin/*")
+    check(s.current_branch() == "main", "HEAD is attached to main")
+    check(s.years_for_branch("main") == [1] and s.years_for_branch("eron8") == [1],
+          "year tags came with the clone")
+    head = s.current_commit()
+    s.adopt_clone()                                            # idempotent: nothing changes
+    check(sorted(s.list_branches()) == ["eron8", "main"] and s.current_commit() == head,
+          "adopt_clone is a no-op the second time")
+    # (2) no local branches at all (HEAD detached) -> same outcome
+    g("clone", "-q", origin, bare_clone)
+    g("checkout", "-q", "--detach", cwd=bare_clone)
+    g("branch", "-q", "-D", "main", cwd=bare_clone)
+    s3 = Simulation.open(bare_clone, mf).store
+    check(sorted(s3.list_branches()) == ["eron8", "main"] and s3.current_branch() == "main",
+          "a clone with no local branches gets them all and lands on main")
+    # (3) a normal run (no remote) with a detached HEAD, as _free_branch_from_main leaves it:
+    #     untouched — a worktree may be advancing that branch
+    g("checkout", "-q", "--detach", cwd=src)
+    s2 = Simulation.open(src, mf).store
+    check(s2.current_branch() == "HEAD" and sorted(s2.list_branches()) == ["eron8", "main"],
+          "a normal run repo is left alone (HEAD stays detached)")
+    shutil.rmtree(base, ignore_errors=True)
+
+
+def test_dotgit_file_recognised_as_run():
+    """A submodule or worktree checkout has a `.git` FILE, not a directory; the server
+    must still list it as a run and init_repo must not re-init it."""
+    from redoland import server as srv
+    from redoland.store import GitStore
+    base = "/tmp/redoland_dotgit"; shutil.rmtree(base, ignore_errors=True)
+    runs = os.path.join(base, "runs"); os.makedirs(runs)
+    mf = lambda t: survival_stub()
+    sim = Simulation.create(os.path.join(base, "src"), Params(founders=3), seed=4,
+                            model_factory=mf, randomize_choices=False)
+    sim.store.ensure_worktree("main", os.path.join(runs, "wt"))
+    check(os.path.isfile(os.path.join(runs, "wt", ".git")), "worktree's .git is a file")
+    check(srv.Manager(runs).list_runs() == ["wt"], "a run whose .git is a file is listed")
+    before = GitStore(os.path.join(runs, "wt"), model_factory=mf).current_commit()
+    s = GitStore(os.path.join(runs, "wt"), model_factory=mf)
+    s.init_repo()
+    check(s.current_commit() == before and s.list_branches() == ["main"],
+          "init_repo leaves an existing .git-file checkout untouched")
+    shutil.rmtree(base, ignore_errors=True)
+
+
 def test_server_concurrent_jobs():
     """The server runs several branches at once: start registers each in the active
     set; pause stops it and drops it from the set (so the picker only lists what runs)."""
@@ -615,6 +684,7 @@ if __name__ == "__main__":
                test_stepwise_fight_resumable,
                test_worldline_fork_inject_replay, test_fork_at_action_and_inject,
                test_premise_set_the_stage, test_concurrent_branches_via_worktrees,
+               test_fresh_clone_adopted_as_run, test_dotgit_file_recognised_as_run,
                test_server_concurrent_jobs,
                test_distributions]:
         print(fn.__name__)

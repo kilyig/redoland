@@ -1,0 +1,3 @@
+[submodule "runs/sample_run"]
+	path = runs/sample_run
+	url = https://github.com/kilyig/redoland-sample-run.git

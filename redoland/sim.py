@@ -43,8 +43,9 @@ class Simulation:
     @classmethod
     def open(cls, path, model_factory: Callable[[int], object], mortality=None,
              randomize_choices: bool = True) -> "Simulation":
-        return cls(GitStore(path, model_factory=model_factory,
-                            randomize_choices=randomize_choices), mortality)
+        store = GitStore(path, model_factory=model_factory, randomize_choices=randomize_choices)
+        store.adopt_clone()          # a fresh clone (e.g. the sample-run submodule) -> local branches
+        return cls(store, mortality)
 
     def engine(self) -> Engine:
         return Engine(self.store.load_world(), self.mortality)
