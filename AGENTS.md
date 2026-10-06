@@ -103,11 +103,11 @@ classic proportional model `round(ratio × N)` is used **only** when `food_base`
 `"params": {"ratio": 0.5}` (or `inject --ratio`) does nothing on a default run; change
 `food_base`/`food_floor_ratio` instead, or zero both to make `ratio` take effect.
 
-**Pile timing.** The pile is refilled by the next year's setup step, so a `pile`
-change injected while the branch sits at a year boundary (`state` shows
-`phase year_start` — right after `year_end`, a `--year` fork, or genesis) is overwritten
-before anyone can take from it. Inject `pile` mid-year (phase `scramble`), or use
-`params` for a lasting change.
+**Pile timing.** Between two years (`state` shows phase `year_end` or `year_start` —
+at a year tag, right after `init`, or after a `--year` fork) the pile is rebuilt by the
+next step, so `pile` changes and a killed agent's stores aim at the **coming** year's
+pile: `set` replaces its harvest, `add` is carried over on top. Mid-year (phase
+`scramble`) they change the live pile. The reported effects say which happened.
 
 System-style changes apply first, then `actions`. So you can author **any** event:
 a system event ("an earthquake empties the pile") *and/or* a specific agent move

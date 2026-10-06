@@ -169,7 +169,7 @@ INJECT --changes SCHEMA (all keys optional; everything is PUBLIC to all agents)
   {
     "agents": {"a003": {"food": 5, "hp": 10, "satiation": 1}},  # set per-agent values
     "kill":   ["a005"],                                          # agents who die
-    "pile":   {"set": 0} | {"add": 20},                          # the plaza's food
+    "pile":   {"set": 0} | {"add": 20},                          # the plaza's food (*)
     "spawn":  [{"sex":"female","age":25,"strength":60,"food":4}],# a newcomer arrives
     "params": {"ratio": 0.5},                                    # a rule change, going forward
     "actions":[{"actor":"a001","kind":"take","amount":3},        # FORCE specific agent moves:
@@ -178,6 +178,10 @@ INJECT --changes SCHEMA (all keys optional; everything is PUBLIC to all agents)
   System-style changes (agents/kill/pile/spawn/params) apply first, then "actions".
   take/give resolve instantly; talk/attack/child play out via the model (claude -p).
   Agent ids (a001, a002, …) come from `redoland state` / `redoland timeline`.
+  (*) Between two years (`state` shows phase year_end/year_start — e.g. at a year tag or
+  right after init) the pile is rebuilt by the next step, so "pile" and a kill's stores
+  aim at the COMING year's pile: "set" replaces its harvest, "add" is carried over on
+  top. Mid-year they change the live pile. The reported effects say which.
 
 NOTES
   * One writer per BRANCH. The web UI can run many branches at once (each in its own
@@ -264,7 +268,8 @@ def build_parser():
     s.add_argument("--changes", default=None,
                    help="JSON of the changes: keys agents/kill/pile/spawn/params (see `redoland -h`)")
     s.add_argument("--ratio", type=float, default=None, help="shortcut: change the food ratio")
-    s.add_argument("--pile", type=int, default=None, help="shortcut: set the plaza's food")
+    s.add_argument("--pile", type=int, default=None,
+                   help="shortcut: set the plaza's food (between years: the coming year's harvest)")
     s.set_defaults(fn=cmd_inject)
 
     s = sub.add_parser("replay", help="checkout a branch and run it forward N years",
